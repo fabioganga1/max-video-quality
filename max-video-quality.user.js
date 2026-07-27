@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality (todos os sites)
 // @namespace     https://github.com/fabioganga1
-// @version       1.6.0
+// @version       1.7.0
 // @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, Facebook, JW Player, Video.js, hls.js, dash.js, Shaka
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
@@ -535,27 +535,76 @@
 	// o player fica sem alternativa senão a máxima. Verificado no Facebook: 720p -> 1440p.
 	// Por AdaptationSet (não global) para não estragar a escolha de codec.
 
+	// Remove de cada AdaptationSet todas as representações menos a de maior altura
+	function stripMpdDoc(doc) {
+		let mudou = false;
+		const sets = doc.getElementsByTagName("AdaptationSet");
+		for (let i = 0; i < sets.length; i++) {
+			const reps = [].slice.call(sets[i].getElementsByTagName("Representation"))
+				.filter((r) => r.getAttribute("height"));
+			if (reps.length < 2) { continue; } // áudio ou única qualidade: não tocar
+			const best = reps.reduce((a, b) =>
+				(((+b.getAttribute("height") || 0) > (+a.getAttribute("height") || 0)) ? b : a));
+			reps.forEach((r) => { if (r !== best && r.parentNode) { r.parentNode.removeChild(r); mudou = true; } });
+			debugLog("MPD -> " + best.getAttribute("height") + "p (de " + reps.length + ")");
+		}
+		return mudou;
+	}
+
 	function mpdRewriteHook() {
+		// Via 1: o player lê o MPD com DOMParser (apanha navegação SPA e a maioria dos casos)
 		try {
 			const realParse = DOMParser.prototype.parseFromString;
 			DOMParser.prototype.parseFromString = function (str, type) {
 				const doc = realParse.apply(this, arguments);
 				try {
 					if (settings.mpdRewrite && typeof str === "string" && str.indexOf("<MPD") !== -1) {
-						const sets = doc.getElementsByTagName("AdaptationSet");
-						for (let i = 0; i < sets.length; i++) {
-							const reps = [].slice.call(sets[i].getElementsByTagName("Representation"))
-								.filter((r) => r.getAttribute("height"));
-							if (reps.length < 2) { continue; } // áudio ou única qualidade: não tocar
-							const best = reps.reduce((a, b) =>
-								(((+b.getAttribute("height") || 0) > (+a.getAttribute("height") || 0)) ? b : a));
-							reps.forEach((r) => { if (r !== best && r.parentNode) { r.parentNode.removeChild(r); } });
-							debugLog("MPD -> " + best.getAttribute("height") + "p (de " + reps.length + ")");
-						}
+						stripMpdDoc(doc);
 					}
 				} catch (e) {}
 				return doc;
 			};
+			mpdRewriteHook.realParse = realParse;
+		} catch (e) {}
+
+		// Via 2: no 1º carregamento o Facebook embute o MPD num <script type="application/json">
+		// dentro do HTML. É preciso reescrevê-lo ANTES de o site o processar.
+		const MPD_KEY = "dash_manifest_xml_string";
+		const reMpd = /"dash_manifest_xml_string"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+
+		const rewriteInlineJson = (node) => {
+			try {
+				if (!settings.mpdRewrite || !node || node.tagName !== "SCRIPT") { return; }
+				if (node.hasAttribute("data-processed")) { return; } // já lido pelo site: tarde demais
+				const txt = node.textContent;
+				if (!txt || txt.indexOf(MPD_KEY) === -1) { return; }
+				const novo = txt.replace(reMpd, (m, esc) => {
+					try {
+						const xml = JSON.parse('"' + esc + '"');
+						const parse = mpdRewriteHook.realParse || DOMParser.prototype.parseFromString;
+						const doc = parse.call(new DOMParser(), xml, "text/xml");
+						if (!stripMpdDoc(doc)) { return m; }
+						return '"' + MPD_KEY + '":' + JSON.stringify(new XMLSerializer().serializeToString(doc));
+					} catch (e) { return m; }
+				});
+				if (novo !== txt) {
+					node.textContent = novo;
+					debugLog("MPD inline reescrito (" + txt.length + " chars)");
+				}
+			} catch (e) {}
+		};
+
+		try {
+			// scripts que já existam quando arrancamos
+			document.querySelectorAll && document.querySelectorAll('script[type="application/json"]').forEach(rewriteInlineJson);
+			// e os que forem inseridos a seguir — apanhados à medida que o HTML é lido
+			new MutationObserver((muts) => {
+				for (const m of muts) {
+					for (const n of m.addedNodes) {
+						if (n.nodeType === 1 && n.tagName === "SCRIPT") { rewriteInlineJson(n); }
+					}
+				}
+			}).observe(document.documentElement || document, { childList: true, subtree: true });
 		} catch (e) {}
 	}
 
