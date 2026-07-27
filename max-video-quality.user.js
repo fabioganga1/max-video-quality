@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name          Max Video Quality (todos os sites)
+// @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       1.7.0
-// @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, Facebook, JW Player, Video.js, hls.js, dash.js, Shaka
+// @version       1.7.1
+// @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
 // @downloadURL   https://raw.githubusercontent.com/fabioganga1/max-video-quality/main/max-video-quality.user.js
