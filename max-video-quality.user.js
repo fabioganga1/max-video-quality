@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.0.0
+// @version       2.1.0
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
@@ -426,18 +426,34 @@
 	}
 
 	function vjsApply() {
-		const vjs = W.videojs;
-		if (!settings.videojs || typeof vjs !== "function") { return; }
-		try {
-			const players = (typeof vjs.getAllPlayers === "function") ? vjs.getAllPlayers()
-				: Object.values((vjs.getPlayers && vjs.getPlayers()) || vjs.players || {});
-			players.filter(Boolean).forEach(vjsForceMax);
+		if (!settings.videojs) { return; }
 
-			if (!vjsApply.hooked && typeof vjs.hook === "function") {
-				vjsApply.hooked = true;
-				// try/catch obrigatório: isto corre dentro do construtor do player do site
-				vjs.hook("setup", (p) => { try { vjsForceMax(p); } catch (e) {} });
-			}
+		// Via 1: registo global (só existe quando o site carrega o video.js por <script>)
+		const vjs = W.videojs;
+		if (typeof vjs === "function") {
+			try {
+				const players = (typeof vjs.getAllPlayers === "function") ? vjs.getAllPlayers()
+					: Object.values((vjs.getPlayers && vjs.getPlayers()) || vjs.players || {});
+				players.filter(Boolean).forEach(vjsForceMax);
+
+				if (!vjsApply.hooked && typeof vjs.hook === "function") {
+					vjsApply.hooked = true;
+					// try/catch obrigatório: isto corre dentro do construtor do player do site
+					vjs.hook("setup", (p) => { try { vjsForceMax(p); } catch (e) {} });
+				}
+			} catch (e) {}
+		}
+
+		// Via 2: o video.js guarda a instância no próprio elemento. Funciona mesmo quando
+		// a biblioteca vem empacotada no site e não existe window.videojs — é o caso da
+		// maioria das webapps modernas (Odysee, PeerTube, Internet Archive, …).
+		try {
+			document.querySelectorAll(".video-js, video-js").forEach((el) => {
+				const p = el.player;
+				if (p && (typeof p.qualityLevels === "function" || typeof p.tech === "function")) {
+					vjsForceMax(p);
+				}
+			});
 		} catch (e) {}
 	}
 
