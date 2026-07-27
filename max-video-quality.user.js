@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name          Max Video Quality (todos os sites)
 // @namespace     https://github.com/fabioganga1
-// @version       1.5.0
-// @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, JW Player, Video.js, hls.js, dash.js, Shaka
+// @version       1.6.0
+// @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, Facebook, JW Player, Video.js, hls.js, dash.js, Shaka
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
 // @downloadURL   https://raw.githubusercontent.com/fabioganga1/max-video-quality/main/max-video-quality.user.js
@@ -41,6 +41,7 @@
 		dashjs: true,
 		shaka: true,
 		vimeoSite: true, // vimeo.com: reescreve o manifest para deixar só a melhor qualidade
+		mpdRewrite: true, // Facebook e outros players DASH fechados: reescreve o MPD
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -528,6 +529,36 @@
 		} catch (e) {}
 	}
 
+	// --- HOOK: MPD (Facebook e outros players DASH fechados) -------------
+	// Players proprietários (Facebook) não expõem API nenhuma, mas leem o manifest
+	// DASH com DOMParser. Removendo as representações baixas de cada AdaptationSet,
+	// o player fica sem alternativa senão a máxima. Verificado no Facebook: 720p -> 1440p.
+	// Por AdaptationSet (não global) para não estragar a escolha de codec.
+
+	function mpdRewriteHook() {
+		try {
+			const realParse = DOMParser.prototype.parseFromString;
+			DOMParser.prototype.parseFromString = function (str, type) {
+				const doc = realParse.apply(this, arguments);
+				try {
+					if (settings.mpdRewrite && typeof str === "string" && str.indexOf("<MPD") !== -1) {
+						const sets = doc.getElementsByTagName("AdaptationSet");
+						for (let i = 0; i < sets.length; i++) {
+							const reps = [].slice.call(sets[i].getElementsByTagName("Representation"))
+								.filter((r) => r.getAttribute("height"));
+							if (reps.length < 2) { continue; } // áudio ou única qualidade: não tocar
+							const best = reps.reduce((a, b) =>
+								(((+b.getAttribute("height") || 0) > (+a.getAttribute("height") || 0)) ? b : a));
+							reps.forEach((r) => { if (r !== best && r.parentNode) { r.parentNode.removeChild(r); } });
+							debugLog("MPD -> " + best.getAttribute("height") + "p (de " + reps.length + ")");
+						}
+					}
+				} catch (e) {}
+				return doc;
+			};
+		} catch (e) {}
+	}
+
 	// --- HOOK: Shaka Player (instalar em document-start) -----------------
 
 	function shakaHook() {
@@ -608,6 +639,7 @@
 	dashHook();
 	shakaHook();
 	vimeoManifestHook();
+	mpdRewriteHook();
 
 	// Assíncrono, depois de carregar definições guardadas:
 	applySettings().then(() => {
