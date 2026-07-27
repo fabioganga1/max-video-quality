@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality (todos os sites)
 // @namespace     https://github.com/fabioganga1
-// @version       1.2.2
+// @version       1.3.0
 // @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, JW Player, Video.js, hls.js, dash.js
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
@@ -65,10 +65,35 @@
 
 	// --- ADAPTADOR: YouTube (site + embeds) ------------------------------
 
+	// Alturas numéricas de cada nível (o YouTube guarda a preferência como número)
+	const YT_NUM = { highres: 4320, hd2880: 2880, hd2160: 2160, hd1440: 1440, hd1080: 1080, hd720: 720, large: 480, medium: 360, small: 240, tiny: 144 };
+
+	function ytWriteStoredQuality(level) {
+		// Formato atual do YouTube (verificado jul/2026):
+		// {"data":"{\"quality\":2160,\"previousQuality\":720}","expiration":...,"creation":...}
+		const num = YT_NUM[level] || 0;
+		if (!num) { return; }
+		try {
+			const now = Date.now();
+			localStorage.setItem("yt-player-quality", JSON.stringify({
+				data: JSON.stringify({ quality: num, previousQuality: num }),
+				expiration: now + 2592000000, creation: now
+			}));
+		} catch (e) {}
+	}
+
+	function ytStorageBoot() {
+		// Em document-start, antes do player arrancar: assim o próprio YouTube já
+		// escolhe alto à partida e o menu mostra a qualidade (não "Auto")
+		if (!hostMatches(/(^|\.)youtube(-nocookie)?\.com$/)) { return; }
+		ytWriteStoredQuality(settings.youtubeTargetRes === "highest" ? "hd2160" : settings.youtubeTargetRes);
+	}
+
 	function ytAdapter() {
 		if (!settings.youtube || !hostMatches(/(^|\.)youtube(-nocookie)?\.com$/)) { return; }
 
-		let lastApplied = ""; // id do último vídeo em que a qualidade foi fixada
+		let appliedFor = "";    // vídeo onde já aplicámos
+		let appliedTarget = ""; // qualidade aplicada nesse vídeo
 
 		const videoIdOf = (p) => {
 			try {
@@ -82,29 +107,25 @@
 			if (!p || typeof p.getPlaybackQuality !== "function") { return; }
 			if (p.getPlaybackQuality() === "unknown") { return; }
 
-			const levels = (typeof p.getAvailableQualityLevels === "function" && p.getAvailableQualityLevels()) || [];
+			const levels = ((typeof p.getAvailableQualityLevels === "function" && p.getAvailableQualityLevels()) || [])
+				.filter((l) => l !== "auto");
 			if (!levels.length) { return; }
 
 			// levels vem por ordem decrescente; usa o alvo se existir, senão o melhor disponível
 			let target = (settings.youtubeTargetRes === "highest") ? levels[0] : settings.youtubeTargetRes;
 			if (!levels.includes(target)) { target = levels[0]; }
 
+			// Re-aplica se o vídeo mudou OU se entretanto apareceu um nível melhor
+			// (o YouTube às vezes só revela o 4K/8K uns segundos depois do arranque).
+			// Se o utilizador baixar manualmente, não lutamos: id e target não mudam.
 			const id = videoIdOf(p);
-			if (id === lastApplied) { return; } // já fixámos neste vídeo
-			lastApplied = id;
+			if (id === appliedFor && target === appliedTarget) { return; }
+			appliedFor = id;
+			appliedTarget = target;
 
-			// Fixa SEMPRE explicitamente, mesmo que o "Auto" já esteja a entregar o
-			// máximo — assim fica selecionado no menu e não desce a meio do vídeo
 			if (typeof p.setPlaybackQualityRange === "function") { p.setPlaybackQualityRange(target); }
 			p.setPlaybackQuality(target);
-
-			// Persiste a preferência como o YouTube faz nativamente
-			try {
-				const now = Date.now();
-				localStorage.setItem("yt-player-quality", JSON.stringify({
-					data: target, expiration: now + 2592000000, creation: now
-				}));
-			} catch (e) {}
+			ytWriteStoredQuality(target);
 
 			debugLog("YouTube -> " + target);
 		};
@@ -112,9 +133,11 @@
 		window.addEventListener("loadstart", (e) => {
 			if (e.target instanceof HTMLMediaElement) { setTimeout(apply, 0); }
 		}, true);
-		window.addEventListener("yt-navigate-finish", () => { lastApplied = ""; setTimeout(apply, 300); }, true);
-		let tries = 0;
-		const t = setInterval(() => { try { apply(); } catch (e) {} if (++tries >= 40) clearInterval(t); }, 500);
+		window.addEventListener("yt-navigate-finish", () => { appliedFor = ""; setTimeout(apply, 300); }, true);
+
+		// Watchdog permanente e leve (só em páginas YouTube): apanha navegação SPA,
+		// vídeos novos e níveis que aparecem tarde — sem janela que expira
+		setInterval(() => { try { apply(); } catch (e) {} }, 1000);
 	}
 
 	// --- ADAPTADOR: Twitch -----------------------------------------------
@@ -438,6 +461,7 @@
 	// --- ARRANQUE --------------------------------------------------------
 
 	// Síncrono, em document-start (não pode esperar pelas definições):
+	ytStorageBoot();
 	twitchStorageBoot();
 	hlsHook();
 	dashHook();
