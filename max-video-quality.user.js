@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality (todos os sites)
 // @namespace     https://github.com/fabioganga1
-// @version       1.4.0
+// @version       1.5.0
 // @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, JW Player, Video.js, hls.js, dash.js, Shaka
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
@@ -40,6 +40,7 @@
 		hlsjs: true,
 		dashjs: true,
 		shaka: true,
+		vimeoSite: true, // vimeo.com: reescreve o manifest para deixar só a melhor qualidade
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -449,6 +450,84 @@
 		} catch (e) {}
 	}
 
+	// --- HOOK: vimeo.com (reescrita do manifest) -------------------------
+	// O player do vimeo.com é fechado: sem API, sem globais e sem estado React
+	// acessível (verificado ao vivo). O que é alcançável é a rede: o manifest
+	// adaptativo vem por XHR/fetch no contexto principal, e nele podemos deixar
+	// só a melhor representação de vídeo — o player fica sem alternativa.
+
+	function vimeoManifestHook() {
+		const isManifest = (url) => /vimeocdn\.com/i.test(url) && /vod-adaptive|playlist|master/i.test(url);
+
+		// Devolve o objeto filtrado, ou null se não for um manifest reconhecido
+		const filterManifest = (obj) => {
+			if (!obj || !Array.isArray(obj.video) || obj.video.length < 2) { return null; }
+			const score = (r) => (r.height || 0) * 1e6 + (r.bitrate || r.bandwidth || 0);
+			const best = obj.video.reduce((a, b) => (score(b) > score(a) ? b : a));
+			if (!best) { return null; }
+			debugLog("vimeo -> " + (best.height || best.bitrate) + " (de " + obj.video.length + " qualidades)");
+			return Object.assign({}, obj, { video: [best] });
+		};
+
+		const tryFilterText = (text) => {
+			if (!text || text.length > 8e6 || text[0] !== "{") { return null; }
+			let parsed;
+			try { parsed = JSON.parse(text); } catch (e) { return null; }
+			const filtered = filterManifest(parsed);
+			return filtered ? JSON.stringify(filtered) : null;
+		};
+
+		// --- XHR ---
+		try {
+			const realOpen = XMLHttpRequest.prototype.open;
+			XMLHttpRequest.prototype.open = function (method, url) {
+				try {
+					if (settings.vimeoSite && typeof url === "string" && isManifest(url)) {
+						this.addEventListener("load", function () {
+							try {
+								const rt = this.responseType;
+								if (rt === "json" && this.response) {
+									const f = filterManifest(this.response);
+									if (f) { Object.defineProperty(this, "response", { value: f, configurable: true }); }
+								} else if (rt === "" || rt === "text") {
+									const f = tryFilterText(this.responseText);
+									if (f) {
+										Object.defineProperty(this, "response", { value: f, configurable: true });
+										Object.defineProperty(this, "responseText", { value: f, configurable: true });
+									}
+								}
+							} catch (e) {}
+						});
+					}
+				} catch (e) {}
+				return realOpen.apply(this, arguments);
+			};
+		} catch (e) {}
+
+		// --- fetch ---
+		try {
+			const realFetch = W.fetch;
+			if (typeof realFetch === "function") {
+				W.fetch = function (input, init) {
+					const p = realFetch.apply(this, arguments);
+					let url = "";
+					try { url = String((input && input.url) || input || ""); } catch (e) {}
+					if (!settings.vimeoSite || !isManifest(url)) { return p; }
+					return p.then((res) => {
+						try {
+							if (!res || !res.ok) { return res; }
+							return res.clone().text().then((t) => {
+								const f = tryFilterText(t);
+								if (!f) { return res; }
+								return new Response(f, { status: res.status, statusText: res.statusText, headers: res.headers });
+							}).catch(() => res);
+						} catch (e) { return res; }
+					});
+				};
+			}
+		} catch (e) {}
+	}
+
 	// --- HOOK: Shaka Player (instalar em document-start) -----------------
 
 	function shakaHook() {
@@ -528,6 +607,7 @@
 	hlsHook();
 	dashHook();
 	shakaHook();
+	vimeoManifestHook();
 
 	// Assíncrono, depois de carregar definições guardadas:
 	applySettings().then(() => {
