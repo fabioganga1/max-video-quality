@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.1.2
+// @version       2.2.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -160,15 +160,16 @@
 			} catch (e) { return location.href; }
 		};
 
+		// Devolve true quando não há mais nada a fazer neste vídeo (conseguido ou desistido)
 		const apply = () => {
 			const p = mainPlayer();
-			if (!p || typeof p.getPlaybackQuality !== "function") { return; }
+			if (!p || typeof p.getPlaybackQuality !== "function") { return false; }
 			const current = p.getPlaybackQuality();
-			if (current === "unknown") { return; }
+			if (current === "unknown") { return false; }
 
 			const levels = ((typeof p.getAvailableQualityLevels === "function" && p.getAvailableQualityLevels()) || [])
 				.filter((l) => l !== "auto");
-			if (!levels.length) { return; }
+			if (!levels.length) { return false; }
 
 			let target = (settings.youtubeTargetRes === "highest") ? levels[0] : settings.youtubeTargetRes;
 			if (!levels.includes(target)) { target = levels[0]; }
@@ -176,23 +177,35 @@
 			const id = videoIdOf(p);
 			if (id !== currentVideo) { currentVideo = id; attempts = 0; }
 
-			// Compara com a qualidade REAL, não com a nossa intenção: assim uma descida
-			// feita pelo YouTube é recuperada. O limite de tentativas evita ficar a lutar
-			// com uma escolha manual do utilizador ou com uma ligação fraca.
-			if (current === target || attempts >= 6) { return; }
+			if (current === target) { return true; }  // já no alvo: nada a fazer
+			if (attempts >= 3) { return true; }       // não insistir: pode ser escolha do utilizador
 			attempts++;
 
 			if (typeof p.setPlaybackQualityRange === "function") { p.setPlaybackQualityRange(target, target); }
 			p.setPlaybackQuality(target);
 			if (ytIsWatchPage()) { ytWriteStoredQuality(target); }
 			debugLog("YouTube -> " + target + " (tentativa " + attempts + ")");
+			return false;
+		};
+
+		// Vigia só até conseguir. Depois PÁRA — só volta a ligar-se em vídeo novo.
+		let timer = null, ticks = 0;
+		const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+		const arm = () => {
+			ticks = 0;
+			if (timer) { return; }
+			timer = setInterval(() => {
+				let done = false;
+				try { done = apply(); } catch (e) {}
+				if (done || ++ticks >= 20) { stop(); debugLog("YouTube: vigilância parada"); }
+			}, 1000);
 		};
 
 		window.addEventListener("loadstart", (e) => {
-			if (e.target instanceof HTMLMediaElement) { setTimeout(apply, 0); }
+			if (e.target instanceof HTMLMediaElement) { currentVideo = ""; arm(); }
 		}, true);
-		window.addEventListener("yt-navigate-finish", () => { currentVideo = ""; setTimeout(apply, 300); }, true);
-		setInterval(() => { try { apply(); } catch (e) {} }, 1000);
+		window.addEventListener("yt-navigate-finish", () => { currentVideo = ""; arm(); }, true);
+		arm();
 	}
 
 	// --- ADAPTADOR: Twitch ------------------------------------------------
@@ -226,26 +239,28 @@
 		let channel = "";
 		let attempts = 0;
 
+		// Devolve true quando não há mais nada a fazer (conseguido ou desistido)
 		const apply = () => {
 			if (location.pathname !== channel) { channel = location.pathname; attempts = 0; }
-			if (attempts >= 6) { return; } // não reescrever indefinidamente a escolha do utilizador
+			if (attempts >= 3) { return true; } // não reescrever a escolha do utilizador
 
 			const player = findPlayer(document.querySelector("video"));
-			if (!player) { return; }
+			if (!player) { return false; }
 			const qs = (player.getQualities && player.getQualities()) || [];
-			if (qs.length < 2) { return; }
+			if (qs.length < 2) { return false; }
 
 			const best = qs.slice().sort((a, b) =>
 				((b.height || 0) - (a.height || 0)) || ((b.framerate || 0) - (a.framerate || 0)))[0];
-			if (!best) { return; }
+			if (!best) { return false; }
 			const cur = player.getQuality && player.getQuality();
-			if (cur && (cur.group === best.group || cur.name === best.name)) { return; }
+			if (cur && (cur.group === best.group || cur.name === best.name)) { return true; } // já no topo
 
 			attempts++;
 			player.setAutoQualityMode && player.setAutoQualityMode(false);
 			player.abrManager && player.abrManager.disable && player.abrManager.disable();
 			player.setQuality(best);
 			debugLog("Twitch -> " + (best.name || best.height) + " (tentativa " + attempts + ")");
+			return false;
 		};
 
 		if (settings.twitchSpoofVisibility) {
@@ -268,11 +283,24 @@
 			} catch (e) {}
 		}
 
+		// Vigia só até conseguir; depois PÁRA. Reativa em stream/canal novo.
+		let timer = null, ticks = 0;
+		const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+		const arm = () => {
+			ticks = 0;
+			if (timer) { return; }
+			timer = setInterval(() => {
+				let done = false;
+				try { done = apply(); } catch (e) {}
+				if (done || ++ticks >= 15) { stop(); debugLog("Twitch: vigilância parada"); }
+			}, 2000);
+		};
+
 		onReady(() => {
 			for (const ev of ["loadedmetadata", "playing", "canplay"]) {
-				document.addEventListener(ev, apply, true);
+				document.addEventListener(ev, () => arm(), true);
 			}
-			setInterval(() => { try { apply(); } catch (e) {} }, 2000);
+			arm();
 		});
 	}
 
