@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name          Max Video Quality (todos os sites)
 // @namespace     https://github.com/fabioganga1
-// @version       1.2.1
+// @version       1.2.2
 // @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, JW Player, Video.js, hls.js, dash.js
 // @author        fabioganga1
-// @homepageURL   https://github.com/fabioganga1/userscripts
-// @downloadURL   https://raw.githubusercontent.com/fabioganga1/userscripts/main/max-video-quality.user.js
-// @updateURL     https://raw.githubusercontent.com/fabioganga1/userscripts/main/max-video-quality.user.js
+// @homepageURL   https://github.com/fabioganga1/max-video-quality
+// @downloadURL   https://raw.githubusercontent.com/fabioganga1/max-video-quality/main/max-video-quality.user.js
+// @updateURL     https://raw.githubusercontent.com/fabioganga1/max-video-quality/main/max-video-quality.user.js
 // @match         *://*/*
 // @run-at        document-start
 // @sandbox       raw
