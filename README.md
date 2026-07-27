@@ -2,7 +2,7 @@
 
 Userscript (Tampermonkey / Violentmonkey) que força automaticamente a **qualidade
 máxima de vídeo em todos os sites**: YouTube (site + embeds), Twitch, Vimeo (embeds),
-JW Player, Video.js, hls.js e dash.js.
+JW Player, Video.js, hls.js, dash.js e Shaka Player.
 
 ## Instalar
 

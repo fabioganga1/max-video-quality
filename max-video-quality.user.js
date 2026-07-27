@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name          Max Video Quality (todos os sites)
 // @namespace     https://github.com/fabioganga1
-// @version       1.3.0
-// @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, JW Player, Video.js, hls.js, dash.js
+// @version       1.4.0
+// @description   Qualidade máxima automática em todos os sites: YouTube, Twitch, Vimeo, JW Player, Video.js, hls.js, dash.js, Shaka
 // @author        fabioganga1
 // @homepageURL   https://github.com/fabioganga1/max-video-quality
 // @downloadURL   https://raw.githubusercontent.com/fabioganga1/max-video-quality/main/max-video-quality.user.js
@@ -39,6 +39,7 @@
 		videojs: true,
 		hlsjs: true,
 		dashjs: true,
+		shaka: true,
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -360,7 +361,9 @@
 			if (typeof v !== "function") { return v; }
 			return new Proxy(v, {
 				construct(target, args, newTarget) {
-					args[0] = Object.assign({}, args[0], { capLevelToPlayerSize: false });
+					if (settings.hlsjs) {
+						args[0] = Object.assign({}, args[0], { capLevelToPlayerSize: false });
+					}
 					const inst = Reflect.construct(target, args, newTarget);
 					hookInstance(inst, target);
 					return inst;
@@ -411,10 +414,13 @@
 	}
 
 	function dashHook() {
-		try {
-			let real;
-			const install = (v) => {
-				if (v && typeof v.MediaPlayer === "function" && !v.__maxqHooked) {
+		const hooked = new WeakSet(); // registo nosso — nunca escrever marcadores em objetos do site
+		const install = (v) => {
+			// try/catch obrigatório: isto corre dentro do setter de window.dashjs;
+			// um erro aqui rebentava o próprio script do site (ex.: módulo congelado)
+			try {
+				if (v && typeof v.MediaPlayer === "function" && !hooked.has(v)) {
+					hooked.add(v);
 					const RealMP = v.MediaPlayer;
 					const WrapMP = function (...a) {
 						const factory = RealMP.apply(this, a);
@@ -428,12 +434,68 @@
 					};
 					Object.assign(WrapMP, RealMP); // preserva dashjs.MediaPlayer.events e restantes estáticos
 					v.MediaPlayer = WrapMP;
-					v.__maxqHooked = true;
 				}
-				return v;
-			};
+			} catch (e) {}
+			return v;
+		};
+		try {
+			let real;
 			if (W.dashjs) { real = install(W.dashjs); }
 			Object.defineProperty(W, "dashjs", {
+				configurable: true,
+				get() { return real; },
+				set(v) { real = install(v); }
+			});
+		} catch (e) {}
+	}
+
+	// --- HOOK: Shaka Player (instalar em document-start) -----------------
+
+	function shakaHook() {
+		const hooked = new WeakSet();
+
+		function hookPlayer(player) {
+			try {
+				const applyMax = () => {
+					try {
+						if (!settings.shaka) { return; }
+						player.configure({ abr: { enabled: false } }); // desliga o ABR automático
+						const tracks = (typeof player.getVariantTracks === "function" && player.getVariantTracks()) || [];
+						if (tracks.length < 2) { return; }
+						const best = tracks.reduce((a, b) =>
+							(((b.height || 0) * 1e6 + (b.bandwidth || 0)) > ((a.height || 0) * 1e6 + (a.bandwidth || 0))) ? b : a);
+						if (best && typeof player.selectVariantTrack === "function") {
+							player.selectVariantTrack(best, true); // true = substitui o buffer já carregado
+							debugLog("shaka -> " + (best.height || best.bandwidth));
+						}
+					} catch (e) {}
+				};
+				if (typeof player.addEventListener === "function") {
+					player.addEventListener("trackschanged", applyMax);
+				}
+				applyMax();
+			} catch (e) {}
+		}
+
+		const install = (v) => {
+			try {
+				if (v && typeof v.Player === "function" && !hooked.has(v)) {
+					hooked.add(v);
+					v.Player = new Proxy(v.Player, {
+						construct(target, args, newTarget) {
+							const inst = Reflect.construct(target, args, newTarget);
+							try { hookPlayer(inst); } catch (e) {}
+							return inst;
+						}
+					});
+				}
+			} catch (e) {}
+			return v;
+		};
+		try {
+			let real;
+			if (W.shaka) { real = install(W.shaka); }
+			Object.defineProperty(W, "shaka", {
 				configurable: true,
 				get() { return real; },
 				set(v) { real = install(v); }
@@ -465,6 +527,7 @@
 	twitchStorageBoot();
 	hlsHook();
 	dashHook();
+	shakaHook();
 
 	// Assíncrono, depois de carregar definições guardadas:
 	applySettings().then(() => {
