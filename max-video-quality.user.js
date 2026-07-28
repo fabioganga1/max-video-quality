@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.2.0
+// @version       2.3.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -440,6 +440,14 @@
 					try {
 						const tech = player.tech(true);
 						const vhs = tech && tech.vhs; // ".hls" foi removido no video.js 8
+						// O VHS limita por defeito a qualidade ao tamanho do leitor: num
+						// player pequeno nunca escolheria 1080p/4K.
+						try {
+							if (vhs && vhs.options_) {
+								vhs.options_.limitRenditionByPlayerDimensions = false;
+								vhs.options_.useDevicePixelRatio = false;
+							}
+						} catch (e) {}
 						const reps = (vhs && vhs.representations) ? vhs.representations() : [];
 						if (reps.length < 2) { return; }
 						const best = reps.reduce((a, b) =>
@@ -547,7 +555,12 @@
 
 	function dashForceMax(player, dashjsRef) {
 		try {
-			player.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: false, audio: false } } } });
+			player.updateSettings({ streaming: { abr: {
+				autoSwitchBitrate: { video: false, audio: false },
+				// não limitar a qualidade ao tamanho do leitor / densidade do ecrã
+				limitBitrateByPortal: false,
+				usePixelRatioInLimitBitrateByPortal: false
+			} } });
 		} catch (e) {}
 		const apply = () => {
 			try {
@@ -625,7 +638,8 @@
 				const applyMax = () => {
 					try {
 						if (!settings.shaka) { return; }
-						player.configure({ abr: { enabled: false } });
+						// abr desligado + sem limitar a qualidade ao tamanho do leitor/ecrã
+						player.configure({ abr: { enabled: false, restrictToElementSize: false, restrictToScreenSize: false } });
 						const tracks = (typeof player.getVariantTracks === "function" && player.getVariantTracks()) || [];
 						if (tracks.length < 2) { return; }
 						const best = tracks.reduce((a, b) =>
