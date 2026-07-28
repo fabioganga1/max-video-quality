@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.3.0
+// @version       2.4.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -775,37 +775,65 @@
 		};
 
 		const tryFilterText = (text) => {
-			if (!text || text.length > 8e6 || text[0] !== "{") { return null; }
+			// regex ancorada: o teste antigo (text[0] !== "{") falhava com BOM ou espaço inicial
+			if (typeof text !== "string" || text.length > 8e6 || !/^[\s﻿]*\{/.test(text)) { return null; }
 			let parsed;
 			try { parsed = JSON.parse(text); } catch (e) { return null; }
 			const f = filterManifest(parsed);
 			return f ? JSON.stringify(f) : null;
 		};
 
+		// Getters instalados na instância no open(), avaliados só quando alguém lê.
+		// Um listener de "load" chegaria TARDE: quem lê em onreadystatechange
+		// (readyState 4) — como o hls.js — lê sempre antes de qualquer "load".
 		try {
-			const realOpen = XMLHttpRequest.prototype.open;
-			XMLHttpRequest.prototype.open = function (method, url) {
-				try {
-					if (typeof url === "string" && isManifest(url)) {
-						this.addEventListener("load", function () {
-							try {
-								const rt = this.responseType;
-								if (rt === "json" && this.response) {
-									const f = filterManifest(this.response);
-									if (f) { Object.defineProperty(this, "response", { value: f, configurable: true }); }
-								} else if (rt === "" || rt === "text") {
-									const f = tryFilterText(this.responseText);
-									if (f) {
-										Object.defineProperty(this, "response", { value: f, configurable: true });
-										Object.defineProperty(this, "responseText", { value: f, configurable: true });
-									}
+			const XHRP = W.XMLHttpRequest.prototype;
+			const dText = Object.getOwnPropertyDescriptor(XHRP, "responseText");
+			const dResp = Object.getOwnPropertyDescriptor(XHRP, "response");
+			const realOpen = XHRP.open;
+			if (dText && dText.get && dResp && dResp.get) {
+				XHRP.open = function (method, url) {
+					try {
+						// o mesmo objeto XHR pode ser reutilizado noutro pedido
+						delete this.response; delete this.responseText;
+						if (typeof url === "string" && isManifest(url)) {
+							let memo, calculado = false;
+							const filtrado = () => {
+								if (calculado) { return memo; }
+								calculado = true;
+								try {
+									// responseType é definido pela página DEPOIS do open()
+									const rt = this.responseType;
+									memo = (rt === "json") ? filterManifest(dResp.get.call(this))
+										: ((rt === "" || rt === "text") ? tryFilterText(dText.get.call(this)) : null);
+								} catch (e) { memo = null; }
+								return memo;
+							};
+							const pronto = () => { try { return this.readyState === 4; } catch (e) { return false; } };
+
+							Object.defineProperty(this, "responseText", {
+								configurable: true, enumerable: false,
+								get() {
+									const raw = dText.get.call(this); // delegar 1º preserva o InvalidStateError nativo
+									if (!pronto()) { return raw; }
+									const f = filtrado();
+									return (typeof f === "string") ? f : raw;
 								}
-							} catch (e) {}
-						});
-					}
-				} catch (e) {}
-				return realOpen.apply(this, arguments);
-			};
+							});
+							Object.defineProperty(this, "response", {
+								configurable: true, enumerable: false,
+								get() {
+									if (!pronto()) { return dResp.get.call(this); }
+									const f = filtrado();
+									if (f === null || f === undefined) { return dResp.get.call(this); }
+									return (this.responseType === "json") ? f : String(f);
+								}
+							});
+						}
+					} catch (e) {}
+					return realOpen.apply(this, arguments);
+				};
+			}
 		} catch (e) {}
 
 		try {
@@ -818,10 +846,21 @@
 					if (!isManifest(url)) { return p; }
 					return p.then((res) => {
 						try {
-							if (!res || !res.ok) { return res; }
+							// 204/205 não podem ter corpo (TypeError); 206 traz Content-Range
+							// que deixaria de bater certo com o corpo reescrito
+							if (!res || !res.ok || res.status === 204 || res.status === 205 || res.status === 206) { return res; }
 							return res.clone().text().then((t) => {
 								const f = tryFilterText(t);
-								return f ? new Response(f, { status: res.status, statusText: res.statusText, headers: res.headers }) : res;
+								if (!f) { return res; }
+								const headers = new Headers(res.headers);
+								headers.delete("content-length"); // o corpo encolheu
+								const out = new Response(f, { status: res.status, statusText: res.statusText, headers });
+								// new Response() perde url/redirected/type — e o hls.js usa
+								// response.url como base para resolver URIs relativos
+								for (const [k, v] of [["url", res.url], ["redirected", res.redirected], ["type", res.type]]) {
+									try { Object.defineProperty(out, k, { value: v, configurable: true }); } catch (e) {}
+								}
+								return out;
 							}).catch(() => res);
 						} catch (e) { return res; }
 					});
