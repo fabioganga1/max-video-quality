@@ -47,19 +47,8 @@ webapps modernas traz o `hls.js` dentro do seu próprio pacote, onde nunca chega
 a instância pendurada no `<video>` e, se mesmo assim não a encontrar, corta o manifesto
 na própria rede, o que funciona seja qual for o leitor.
 
----
-
-## Resolução visível
-
-Sempre que a resolução muda, aparece um aviso discreto no canto do vídeo
-(por exemplo `1080p 1920×1080`) que desaparece ao fim de dois segundos e meio.
-
-Serve para confirmar de relance que o script fez o seu trabalho. Funciona em qualquer
-site e com qualquer leitor, porque lê `videoWidth`/`videoHeight` do próprio elemento —
-o valor real do que está a ser reproduzido, mesmo em streaming adaptativo.
-
-Miniaturas e pré-visualizações são ignoradas (vídeos com menos de 200 px de largura).
-Para desligar: `showResolution` → `false`.
+O script nunca desenha nada por cima do site: não há avisos, ícones nem sobreposições.
+A única saída visível é a consola, e só com `debug` ligado.
 
 ---
 
@@ -106,9 +95,8 @@ primeira utilização do script):
 |---|:---:|---|
 | `youtubeTargetRes` | `highest` | Resolução alvo no YouTube (`highest`, `hd2160`, `hd1080`, …) |
 | `twitchSpoofVisibility` | `false` | Impede o Twitch de baixar a qualidade em separadores em segundo plano |
-| `showResolution` | `true` | Aviso com a resolução atual, ao mudar de nível |
 | `m3u8Rewrite` | `true` | Corta a master playlist HLS na melhor variante |
-| `debug` | `false` | Mostra na consola (F12) cada ação do script, com o prefixo `MAXQ` |
+| `debug` | `false` | Mostra na consola (F12) cada ação do script e a resolução real de cada vídeo, com o prefixo `MAXQ` |
 
 Cada plataforma tem também o seu interruptor próprio (`youtube`, `twitch`, `vimeoSite`,
 `jwplayer`, `videojs`, `hlsjs`, `hlsGeneric`, `dashjs`, `shaka`, `mpdRewrite`), para

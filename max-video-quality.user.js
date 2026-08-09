@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.5.0
+// @version       2.5.1
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -45,7 +45,6 @@
 		shaka: true,
 		mpdRewrite: true, // players DASH fechados (ex.: Facebook)
 		m3u8Rewrite: true, // master playlists HLS: deixa só a melhor variante
-		showResolution: true, // aviso curto com a resolução atual, ao mudar de nível
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -989,69 +988,33 @@
 		installTextResponseFilter(isM3u8, (t) => (settings.m3u8Rewrite ? stripM3u8(t) : null));
 	}
 
-	// --- MOSTRAR A RESOLUÇÃO ATUAL -----------------------------------------
+	// --- RESOLUÇÃO ATUAL (só na consola, com debug ligado) -----------------
 	// videoWidth/videoHeight dão sempre a resolução real a ser reproduzida,
-	// seja qual for o leitor (funciona também com blob:/MSE). O aviso aparece
-	// uns segundos quando a resolução muda e desaparece sozinho.
+	// seja qual for o leitor (funciona também com blob:/MSE). Nada no ecrã:
+	// isto é diagnóstico, não é para aparecer por cima do site.
 
 	const resWatched = new WeakSet();
-	let resBox = null, resTimer = null;
 
-	const resLabel = (w, h) => {
-		if (!w || !h) { return ""; }
-		// Pelo lado menor: um vídeo de telemóvel 1080×1920 é "1080p", não "1440p"
-		const p = Math.min(w, h);
-		const nome = (p >= 4320) ? "8K" : (p >= 2160) ? "4K" : (p >= 1440) ? "1440p"
-			: (p >= 1080) ? "1080p" : (p >= 720) ? "720p" : p + "p";
-		return nome + "  " + w + "×" + h;
-	};
-
-	function resShow(video) {
-		try {
-			if (!settings.showResolution) { return; }
-			const w = video.videoWidth, h = video.videoHeight;
-			if (!w || !h) { return; }
-			const r = video.getBoundingClientRect();
-			if (r.width < 200 || r.height < 110) { return; } // ignorar miniaturas e pré-visualizações
-			debugLog("resolução -> " + w + "x" + h);
-
-			if (!resBox) {
-				resBox = document.createElement("div");
-				resBox.style.cssText = [
-					"position:fixed", "z-index:2147483647", "pointer-events:none",
-					"padding:4px 9px", "border-radius:6px",
-					"background:rgba(0,0,0,.72)", "color:#fff",
-					"font:600 12px/1.4 system-ui,sans-serif", "letter-spacing:.02em",
-					"transition:opacity .25s", "opacity:0"
-				].join(";");
-			}
-			// em ecrã inteiro só o elemento em fullscreen é desenhado
-			const host = document.fullscreenElement || document.body;
-			if (resBox.parentNode !== host) { host.appendChild(resBox); }
-			resBox.textContent = resLabel(w, h);
-			resBox.style.left = Math.round(r.left + 10) + "px";
-			resBox.style.top = Math.round(r.top + 10) + "px";
-			resBox.style.opacity = "1";
-
-			clearTimeout(resTimer);
-			resTimer = setTimeout(() => { if (resBox) { resBox.style.opacity = "0"; } }, 2500);
-		} catch (e) {}
-	}
-
-	function resWatch(video) {
+	function resLogWatch(video) {
 		if (resWatched.has(video)) { return; }
 		resWatched.add(video);
+		const diz = () => {
+			try {
+				const w = video.videoWidth, h = video.videoHeight;
+				if (w && h) { debugLog("resolução -> " + w + "x" + h); }
+			} catch (e) {}
+		};
 		// "resize" no <video> dispara sempre que videoWidth/videoHeight mudam,
 		// ou seja, exatamente quando o streaming adaptativo troca de nível
-		for (const ev of ["resize", "loadedmetadata", "playing"]) {
-			try { video.addEventListener(ev, () => resShow(video)); } catch (e) {}
+		for (const ev of ["resize", "loadedmetadata"]) {
+			try { video.addEventListener(ev, diz); } catch (e) {}
 		}
-		resShow(video);
+		diz();
 	}
 
-	function resApply() {
-		if (!settings.showResolution) { return; }
-		try { document.querySelectorAll("video").forEach(resWatch); } catch (e) {}
+	function resLogApply() {
+		if (!settings.debug) { return; } // sem debug não se liga sequer aos eventos
+		try { document.querySelectorAll("video").forEach(resLogWatch); } catch (e) {}
 	}
 
 	// --- HOOK: manifest do vimeo.com --------------------------------------
@@ -1180,7 +1143,7 @@
 			try { jwApply(); } catch (e) {}
 			try { vjsApply(); } catch (e) {}
 			try { hlsGenericApply(); } catch (e) {}
-			try { resApply(); } catch (e) {}
+			try { resLogApply(); } catch (e) {}
 		};
 		let timer = null, ticks = 0, lastStart = 0;
 
