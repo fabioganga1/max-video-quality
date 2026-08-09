@@ -32,12 +32,34 @@ instala-a sozinho.
 | **JW Player** | `setCurrentQuality()` | ✅ Testado |
 | **Video.js** | `qualityLevels()` / VHS | ✅ Testado |
 | **hls.js** | Nível fixado no `MANIFEST_PARSED` | ✅ Testado |
+| **hls.js empacotado** (sem `window.Hls`) | Instância encontrada a partir do `<video>` | ✅ Testado |
+| **Qualquer leitor HLS** | Master playlist `.m3u8` reduzida à melhor variante | ✅ Testado |
 | **dash.js** (v4 e v5) | ABR desligado + melhor representação | ✅ Testado |
 | **Shaka Player** | ABR desligado + melhor variante | ✅ Testado |
 | **Facebook** | Reescrita do manifest DASH | ⚠️ Parcial |
 
 Estas tecnologias cobrem a maioria dos sites com vídeo: plataformas de streaming,
 jornais, canais de TV online, cursos e portais de vídeo.
+
+As duas linhas de HLS são o que apanha os **players feitos à medida**. A maioria das
+webapps modernas traz o `hls.js` dentro do seu próprio pacote, onde nunca chega ao
+`window` — nesse caso o hook clássico do construtor não dispara. O script procura então
+a instância pendurada no `<video>` e, se mesmo assim não a encontrar, corta o manifesto
+na própria rede, o que funciona seja qual for o leitor.
+
+---
+
+## Resolução visível
+
+Sempre que a resolução muda, aparece um aviso discreto no canto do vídeo
+(por exemplo `1080p 1920×1080`) que desaparece ao fim de dois segundos e meio.
+
+Serve para confirmar de relance que o script fez o seu trabalho. Funciona em qualquer
+site e com qualquer leitor, porque lê `videoWidth`/`videoHeight` do próprio elemento —
+o valor real do que está a ser reproduzido, mesmo em streaming adaptativo.
+
+Miniaturas e pré-visualizações são ignoradas (vídeos com menos de 200 px de largura).
+Para desligar: `showResolution` → `false`.
 
 ---
 
@@ -84,11 +106,18 @@ primeira utilização do script):
 |---|:---:|---|
 | `youtubeTargetRes` | `highest` | Resolução alvo no YouTube (`highest`, `hd2160`, `hd1080`, …) |
 | `twitchSpoofVisibility` | `false` | Impede o Twitch de baixar a qualidade em separadores em segundo plano |
+| `showResolution` | `true` | Aviso com a resolução atual, ao mudar de nível |
+| `m3u8Rewrite` | `true` | Corta a master playlist HLS na melhor variante |
 | `debug` | `false` | Mostra na consola (F12) cada ação do script, com o prefixo `MAXQ` |
 
 Cada plataforma tem também o seu interruptor próprio (`youtube`, `twitch`, `vimeoSite`,
-`jwplayer`, `videojs`, `hlsjs`, `dashjs`, `shaka`, `mpdRewrite`), para desativar
-individualmente se necessário.
+`jwplayer`, `videojs`, `hlsjs`, `hlsGeneric`, `dashjs`, `shaka`, `mpdRewrite`), para
+desativar individualmente se necessário.
+
+> **Nota sobre `m3u8Rewrite`:** como o corte é feito no manifesto, o leitor passa a
+> conhecer uma única qualidade — e o menu de qualidades do site fica com uma só entrada.
+> É o preço de funcionar com leitores fechados. Quem preferir manter o menu intacto pode
+> pôr esta opção a `false`: as restantes vias continuam a atuar.
 
 ---
 

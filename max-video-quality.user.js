@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.4.0
+// @version       2.5.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -40,9 +40,12 @@
 		jwplayer: true,
 		videojs: true,
 		hlsjs: true,
+		hlsGeneric: true, // hls.js empacotado no site (sem window.Hls)
 		dashjs: true,
 		shaka: true,
 		mpdRewrite: true, // players DASH fechados (ex.: Facebook)
+		m3u8Rewrite: true, // master playlists HLS: deixa só a melhor variante
+		showResolution: true, // aviso curto com a resolução atual, ao mudar de nível
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -494,16 +497,20 @@
 		} catch (e) {}
 	}
 
+	// --- HLS: melhor nível (partilhado pelos dois hooks de hls.js) ---------
+
+	const hlsPickBest = (levels) => levels.reduce((bi, l, i, a) => {
+		const b = a[bi];
+		if ((l.height || 0) !== (b.height || 0)) { return ((l.height || 0) > (b.height || 0)) ? i : bi; }
+		return ((l.bitrate || 0) > (b.bitrate || 0)) ? i : bi;
+	}, 0);
+
 	// --- HOOK: hls.js ------------------------------------------------------
 
 	function hlsHook() {
 		if (!settings.hlsjs) { return; }
 
-		const pickBest = (levels) => levels.reduce((bi, l, i, a) => {
-			const b = a[bi];
-			if ((l.height || 0) !== (b.height || 0)) { return ((l.height || 0) > (b.height || 0)) ? i : bi; }
-			return ((l.bitrate || 0) > (b.bitrate || 0)) ? i : bi;
-		}, 0);
+		const pickBest = hlsPickBest;
 
 		const hookInstance = (hls, HlsClass) => {
 			try {
@@ -547,6 +554,103 @@
 				configurable: true,
 				get() { return Wrapped; },
 				set(v) { Real = v; Wrapped = wrap(v); }
+			});
+		} catch (e) {}
+	}
+
+	// --- ADAPTADOR: hls.js empacotado (sem window.Hls) ---------------------
+	// A maioria das webapps modernas traz o hls.js dentro do próprio bundle,
+	// por isso o hook do construtor acima nunca chega a disparar. Aqui vamos
+	// à procura da instância já criada, pendurada no <video> ou num componente
+	// (Vue/React) acima dele — é o que apanha os players "à medida".
+
+	const hlsTries = new WeakMap();   // instância -> nº de aplicações
+	const hlsVideoDone = new WeakSet(); // <video> já resolvido: não voltar a varrer
+
+	const looksLikeHls = (o) => {
+		try {
+			return !!o && typeof o === "object"
+				&& typeof o.attachMedia === "function"
+				&& typeof o.destroy === "function"
+				&& Array.isArray(o.levels);
+		} catch (e) { return false; }
+	};
+
+	// Devolve true quando não há mais nada a fazer (conseguido ou desistido)
+	function hlsForceMax(hls) {
+		try {
+			const n = hlsTries.get(hls) || 0;
+			if (n >= 3) { return true; } // não lutar contra a escolha do utilizador
+			const levels = hls.levels || [];
+			if (levels.length < 2) { return false; } // manifesto ainda não chegou
+			const best = hlsPickBest(levels);
+			// o site pode ter ligado o limite pelo tamanho do leitor
+			try { if (hls.config) { hls.config.capLevelToPlayerSize = false; } } catch (e) {}
+			hls.autoLevelCapping = -1;
+			if (hls.loadLevel === best && hls.nextLevel === best) { return true; }
+			hlsTries.set(hls, n + 1);
+			hls.nextLevel = best; // troca de nível sem esvaziar o buffer
+			hls.loadLevel = best;
+			debugLog("hls.js (bundle) -> nível " + best + " ("
+				+ ((levels[best] && levels[best].height) || "?") + "p, tentativa " + (n + 1) + ")");
+			return false;
+		} catch (e) { return true; }
+	}
+
+	// Procura limitada: só propriedades próprias (os expandos que o site pendura,
+	// como __vue__ / __reactFiber$ / hls) e com orçamento de nós, para nunca
+	// transformar isto num varrimento caro do grafo da página.
+	const HLS_PREF = /^_{0,2}(hls|player|media|video|core)/i;
+
+	function findHlsNear(video) {
+		let budget = 400;
+		const seen = new Set();
+		const scan = (obj, depth) => {
+			if (budget-- <= 0 || depth > 4 || !obj || typeof obj !== "object" || seen.has(obj)) { return null; }
+			seen.add(obj);
+			if (looksLikeHls(obj)) { return obj; }
+			let keys;
+			try { keys = Object.keys(obj); } catch (e) { return null; }
+			if (keys.length > 60) { keys = keys.slice(0, 60); }
+			// nomes prováveis primeiro: aumenta a hipótese de acertar antes do orçamento acabar
+			keys.sort((a, b) => (HLS_PREF.test(b) ? 1 : 0) - (HLS_PREF.test(a) ? 1 : 0));
+			for (const k of keys) {
+				let v;
+				try { v = obj[k]; } catch (e) { continue; } // getters do site podem rebentar
+				if (!v || typeof v !== "object") { continue; }
+				const hit = scan(v, depth + 1);
+				if (hit) { return hit; }
+			}
+			return null;
+		};
+		let el = video, hops = 0;
+		while (el && hops < 8) {
+			const hit = scan(el, 0);
+			if (hit) { return hit; }
+			el = el.parentElement; hops++;
+		}
+		return null;
+	}
+
+	function hlsGenericApply() {
+		if (!settings.hlsGeneric) { return; }
+		try {
+			document.querySelectorAll("video").forEach((v) => {
+				if (hlsVideoDone.has(v)) { return; }
+				const hls = findHlsNear(v);
+				if (!hls) { return; }
+				if (!hlsTries.has(hls)) {
+					hlsTries.set(hls, 0);
+					// A lista de níveis costuma chegar depois de encontrarmos a instância.
+					// Cada manifesto novo = vídeo novo: orçamento de tentativas a zero,
+					// senão o 2.º vídeo da sessão ficava sem forçagem nenhuma.
+					try {
+						hls.on("hlsManifestParsed", () => {
+							try { hlsTries.set(hls, 0); hlsVideoDone.delete(v); hlsForceMax(hls); } catch (e) {}
+						});
+					} catch (e) {}
+				}
+				if (hlsForceMax(hls)) { hlsVideoDone.add(v); }
 			});
 		} catch (e) {}
 	}
@@ -756,6 +860,200 @@
 		} catch (e) {}
 	}
 
+	// --- FILTRO DE RESPOSTAS (XHR + fetch) ---------------------------------
+	// Instalado uma só vez e com teste de URL barato à cabeça: só as respostas
+	// que interessam chegam a ser lidas. transform(texto) -> string | null.
+
+	function installTextResponseFilter(isTarget, transform) {
+		// XHR: getters instalados na instância no open(), avaliados só quando
+		// alguém lê. Um listener de "load" chegaria TARDE — quem lê em
+		// onreadystatechange (readyState 4), como o hls.js, lê primeiro.
+		try {
+			const XHRP = W.XMLHttpRequest.prototype;
+			const dText = Object.getOwnPropertyDescriptor(XHRP, "responseText");
+			const dResp = Object.getOwnPropertyDescriptor(XHRP, "response");
+			const realOpen = XHRP.open;
+			if (dText && dText.get && dResp && dResp.get) {
+				XHRP.open = function (method, url) {
+					try {
+						// o mesmo objeto XHR pode ser reutilizado noutro pedido
+						delete this.response; delete this.responseText;
+						if (typeof url === "string" && isTarget(url)) {
+							let memo, calculado = false;
+							const filtrado = () => {
+								if (calculado) { return memo; }
+								calculado = true;
+								try {
+									const rt = this.responseType; // definido pela página DEPOIS do open()
+									memo = (rt === "" || rt === "text") ? transform(dText.get.call(this)) : null;
+								} catch (e) { memo = null; }
+								return memo;
+							};
+							const pronto = () => { try { return this.readyState === 4; } catch (e) { return false; } };
+
+							Object.defineProperty(this, "responseText", {
+								configurable: true, enumerable: false,
+								get() {
+									const raw = dText.get.call(this); // delegar 1º preserva o InvalidStateError nativo
+									if (!pronto()) { return raw; }
+									const f = filtrado();
+									return (typeof f === "string") ? f : raw;
+								}
+							});
+							Object.defineProperty(this, "response", {
+								configurable: true, enumerable: false,
+								get() {
+									if (!pronto()) { return dResp.get.call(this); }
+									const f = filtrado();
+									return (typeof f === "string") ? f : dResp.get.call(this);
+								}
+							});
+						}
+					} catch (e) {}
+					return realOpen.apply(this, arguments);
+				};
+			}
+		} catch (e) {}
+
+		try {
+			const realFetch = W.fetch;
+			if (typeof realFetch !== "function") { return; }
+			W.fetch = function (input, init) {
+				const p = realFetch.apply(this, arguments);
+				let url = "";
+				try { url = String((input && input.url) || input || ""); } catch (e) {}
+				if (!isTarget(url)) { return p; }
+				return p.then((res) => {
+					try {
+						// 204/205 não podem ter corpo (TypeError); 206 traz Content-Range
+						// que deixaria de bater certo com o corpo reescrito
+						if (!res || !res.ok || res.status === 204 || res.status === 205 || res.status === 206) { return res; }
+						return res.clone().text().then((t) => {
+							const f = transform(t);
+							if (!f) { return res; }
+							const headers = new Headers(res.headers);
+							headers.delete("content-length"); // o corpo mudou de tamanho
+							const out = new Response(f, { status: res.status, statusText: res.statusText, headers });
+							// new Response() perde url/redirected/type — e o hls.js usa
+							// response.url como base para resolver URIs relativos
+							for (const [k, v] of [["url", res.url], ["redirected", res.redirected], ["type", res.type]]) {
+								try { Object.defineProperty(out, k, { value: v, configurable: true }); } catch (e) {}
+							}
+							return out;
+						}).catch(() => res);
+					} catch (e) { return res; }
+				});
+			};
+		} catch (e) {}
+	}
+
+	// --- HOOK: master playlists HLS (.m3u8) --------------------------------
+	// O equivalente do mpdRewriteHook para HLS: deixa no manifesto apenas a
+	// variante de maior resolução. Como age na rede, funciona com QUALQUER
+	// leitor — hls.js empacotado, HLS nativo (Safari/iOS) ou players fechados.
+
+	function stripM3u8(text) {
+		if (typeof text !== "string" || text.length > 4e6) { return null; }
+		if (!/^﻿?\s*#EXTM3U/.test(text)) { return null; }
+		if (text.indexOf("#EXT-X-STREAM-INF") === -1) { return null; } // playlist de media: não mexer
+
+		const lines = text.split(/\r?\n/);
+		const keep = [];      // tudo o resto (#EXT-X-MEDIA, chaves, etc.) fica intacto
+		const variants = [];
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			if (line.lastIndexOf("#EXT-X-STREAM-INF:", 0) !== 0) { keep.push(line); continue; }
+			// o URI é a primeira linha seguinte que não é vazia nem comentário
+			let j = i + 1;
+			while (j < lines.length && (lines[j].trim() === "" || lines[j].charAt(0) === "#")) { j++; }
+			if (j >= lines.length) { keep.push(line); break; } // manifesto truncado: não arriscar
+			const res = /RESOLUTION=\d+x(\d+)/i.exec(line);
+			const bw = /(?:^|[,:])BANDWIDTH=(\d+)/i.exec(line); // não apanhar AVERAGE-BANDWIDTH
+			variants.push({
+				h: res ? +res[1] : 0,
+				score: (res ? +res[1] : 0) * 1e9 + (bw ? +bw[1] : 0),
+				lines: [line, lines[j]]
+			});
+			i = j;
+		}
+
+		if (variants.length < 2) { return null; }
+		const best = variants.reduce((a, b) => (b.score > a.score ? b : a));
+		debugLog("m3u8 -> " + (best.h || "?") + "p (de " + variants.length + " variantes)");
+		return keep.concat(best.lines).join("\n");
+	}
+
+	function m3u8RewriteHook() {
+		if (!settings.m3u8Rewrite) { return; }
+		const isM3u8 = (url) => /\.m3u8(\?|#|$)/i.test(url);
+		installTextResponseFilter(isM3u8, (t) => (settings.m3u8Rewrite ? stripM3u8(t) : null));
+	}
+
+	// --- MOSTRAR A RESOLUÇÃO ATUAL -----------------------------------------
+	// videoWidth/videoHeight dão sempre a resolução real a ser reproduzida,
+	// seja qual for o leitor (funciona também com blob:/MSE). O aviso aparece
+	// uns segundos quando a resolução muda e desaparece sozinho.
+
+	const resWatched = new WeakSet();
+	let resBox = null, resTimer = null;
+
+	const resLabel = (w, h) => {
+		if (!w || !h) { return ""; }
+		// Pelo lado menor: um vídeo de telemóvel 1080×1920 é "1080p", não "1440p"
+		const p = Math.min(w, h);
+		const nome = (p >= 4320) ? "8K" : (p >= 2160) ? "4K" : (p >= 1440) ? "1440p"
+			: (p >= 1080) ? "1080p" : (p >= 720) ? "720p" : p + "p";
+		return nome + "  " + w + "×" + h;
+	};
+
+	function resShow(video) {
+		try {
+			if (!settings.showResolution) { return; }
+			const w = video.videoWidth, h = video.videoHeight;
+			if (!w || !h) { return; }
+			const r = video.getBoundingClientRect();
+			if (r.width < 200 || r.height < 110) { return; } // ignorar miniaturas e pré-visualizações
+			debugLog("resolução -> " + w + "x" + h);
+
+			if (!resBox) {
+				resBox = document.createElement("div");
+				resBox.style.cssText = [
+					"position:fixed", "z-index:2147483647", "pointer-events:none",
+					"padding:4px 9px", "border-radius:6px",
+					"background:rgba(0,0,0,.72)", "color:#fff",
+					"font:600 12px/1.4 system-ui,sans-serif", "letter-spacing:.02em",
+					"transition:opacity .25s", "opacity:0"
+				].join(";");
+			}
+			// em ecrã inteiro só o elemento em fullscreen é desenhado
+			const host = document.fullscreenElement || document.body;
+			if (resBox.parentNode !== host) { host.appendChild(resBox); }
+			resBox.textContent = resLabel(w, h);
+			resBox.style.left = Math.round(r.left + 10) + "px";
+			resBox.style.top = Math.round(r.top + 10) + "px";
+			resBox.style.opacity = "1";
+
+			clearTimeout(resTimer);
+			resTimer = setTimeout(() => { if (resBox) { resBox.style.opacity = "0"; } }, 2500);
+		} catch (e) {}
+	}
+
+	function resWatch(video) {
+		if (resWatched.has(video)) { return; }
+		resWatched.add(video);
+		// "resize" no <video> dispara sempre que videoWidth/videoHeight mudam,
+		// ou seja, exatamente quando o streaming adaptativo troca de nível
+		for (const ev of ["resize", "loadedmetadata", "playing"]) {
+			try { video.addEventListener(ev, () => resShow(video)); } catch (e) {}
+		}
+		resShow(video);
+	}
+
+	function resApply() {
+		if (!settings.showResolution) { return; }
+		try { document.querySelectorAll("video").forEach(resWatch); } catch (e) {}
+	}
+
 	// --- HOOK: manifest do vimeo.com --------------------------------------
 	// Instalado APENAS em domínios Vimeo — não faz sentido reescrever fetch/XHR
 	// em todos os sites do mundo por causa de um só serviço.
@@ -878,7 +1176,12 @@
 
 		// JW Player / Video.js carregam tarde: janela curta de scan por ativação,
 		// renovada no máximo uma vez a cada 5 s (evita polling permanente).
-		const scanAll = () => { try { jwApply(); } catch (e) {} try { vjsApply(); } catch (e) {} };
+		const scanAll = () => {
+			try { jwApply(); } catch (e) {}
+			try { vjsApply(); } catch (e) {}
+			try { hlsGenericApply(); } catch (e) {}
+			try { resApply(); } catch (e) {}
+		};
 		let timer = null, ticks = 0, lastStart = 0;
 
 		const startScan = () => {
@@ -925,6 +1228,7 @@
 	dashHook();
 	shakaHook();
 	mpdRewriteHook();
+	m3u8RewriteHook();
 	vimeoManifestHook();
 
 	// 3) Adaptadores de runtime
