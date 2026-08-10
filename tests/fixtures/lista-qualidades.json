@@ -1,0 +1,36 @@
+{
+	"_nota": "Forma recolhida de um portal de vídeo real, com as URLs trocadas por um CDN neutro. O que interessa ao teste é a estrutura: quatro variantes HLS com um master por qualidade, a predefinida no meio da lista, e uma quinta entrada mp4 cuja URL não aponta para nenhum manifesto (é um endpoint que devolve JSON). O detetor tem de escolher a HLS de 1080p e não a mp4, que também diz 1080.",
+	"mediaPriority": "hls",
+	"defaultQuality": [480, 240, 720, 1080],
+	"mediaDefinitions": [
+		{
+			"group": 1, "height": 1080, "width": 1920, "defaultQuality": false,
+			"format": "hls", "quality": "1080",
+			"videoUrl": "https://cdn.exemplo/AAA=,1786398130/hls/c1/videos/1080P_4000K_1.mp4/master.m3u8?",
+			"segmentFormats": { "audio": "ts_aac", "video": "mpeg2_ts" }
+		},
+		{
+			"group": 1, "height": 240, "width": 426, "defaultQuality": false,
+			"format": "hls", "quality": "240",
+			"videoUrl": "https://cdn.exemplo/BBB=,1786398130/hls/c1/videos/240P_1000K_1.mp4/master.m3u8?",
+			"segmentFormats": { "audio": "ts_aac", "video": "mpeg2_ts" }
+		},
+		{
+			"group": 1, "height": 480, "width": 854, "defaultQuality": false,
+			"format": "hls", "quality": "480",
+			"videoUrl": "https://cdn.exemplo/CCC=,1786398130/hls/c1/videos/480P_2000K_1.mp4/master.m3u8?",
+			"segmentFormats": { "audio": "ts_aac", "video": "mpeg2_ts" }
+		},
+		{
+			"group": 1, "height": 720, "width": 1280, "defaultQuality": true,
+			"format": "hls", "quality": "720",
+			"videoUrl": "https://cdn.exemplo/DDD=,1786398130/hls/c1/videos/720P_4000K_1.mp4/master.m3u8?",
+			"segmentFormats": { "audio": "ts_aac", "video": "mpeg2_ts" }
+		},
+		{
+			"group": 1, "height": 1080, "width": 1920, "defaultQuality": false,
+			"format": "mp4", "quality": [], "remote": true,
+			"videoUrl": "https://site.exemplo/video/get_media?s=eyJrIjoiYWJj&v=1&e=0&t=p"
+		}
+	]
+}
