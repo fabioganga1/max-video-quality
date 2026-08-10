@@ -10,7 +10,7 @@ const ditos = [];
 
 const api = montar(
 	funcao("stripM3u8") + funcao("installTextResponseFilter"),
-	{ W: {}, settings, debugLog: (m) => ditos.push(m) },
+	{ W: {}, settings, debugLog: (m) => ditos.push(m), acao: (m) => ditos.push(m) },
 	"{ stripM3u8, installTextResponseFilter }"
 );
 

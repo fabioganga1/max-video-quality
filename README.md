@@ -98,6 +98,7 @@ primeira utilização do script):
 | `twitchSpoofVisibility` | `false` | Impede o Twitch de baixar a qualidade em separadores em segundo plano |
 | `m3u8Rewrite` | `true` | Corta a master playlist HLS na melhor variante |
 | `qualityList` | `true` | Sites que escolhem a qualidade antes de o leitor existir |
+| `autoDisable` | `true` | Desliga-se sozinho num site onde tenha prendido o vídeo |
 | `debug` | `false` | Mostra na consola (F12) cada ação do script e a resolução real de cada vídeo, com o prefixo `MAXQ` |
 
 Cada plataforma tem também o seu interruptor próprio (`youtube`, `twitch`, `vimeoSite`,
@@ -119,8 +120,9 @@ linha, o leitor desse site não é reconhecido. Se aparecer, o script atuou e a 
 apresentada é o máximo disponível.
 
 **Um site específico deixou de funcionar bem**
-Painel do Tampermonkey → clicar no nome do script → **Definições** →
-**Exclusões do utilizador** → adicionar `https://exemplo.com/*`.
+Clicar no ícone do Tampermonkey → **⛔ Desativar neste site**. A página recarrega e o
+script deixa de instalar seja o que for nesse domínio. Para voltar atrás, no mesmo menu:
+**✅ Reativar neste site**.
 
 **O vídeo interrompe para carregar**
 Consequência natural de fixar a qualidade máxima: em ligações mais lentas, o leitor
@@ -143,6 +145,39 @@ apareça e só então lhe toca.
 
 **Regra de base:** não conseguir subir a qualidade é aceitável; estragar a reprodução
 nunca é. Perante qualquer dúvida, o script não age.
+
+### Rede de segurança
+
+Se o script mexeu numa página e, apesar disso, um vídeo ficou preso a tentar arrancar, o
+script assume que a culpa é dele: desliga-se nesse domínio e recarrega a página uma vez.
+O site volta ao normal sozinho, sem melhoria nenhuma mas a funcionar — que é sempre
+preferível a ficar estragado.
+
+As condições são apertadas de propósito, para nunca disparar à toa. É preciso que o
+script tenha mesmo alterado alguma coisa na página, que o vídeo esteja a **tentar** tocar
+(e não em pausa), que não tenha dados para continuar, e que o tempo fique congelado 12
+segundos seguidos. Um vídeo em pausa, com autoplay bloqueado, ou a carregar mas a
+progredir, nunca acorda isto.
+
+Desliga-se em `autoDisable`. A lista de domínios onde o script já não atua fica em
+`sitesDesativados`, no separador **Armazenamento**.
+
+### Menu do Tampermonkey
+
+No ícone do Tampermonkey, com a página aberta:
+
+| Comando | O que faz |
+|---|---|
+| ⛔ **Desativar neste site** | O script deixa de instalar seja o que for neste domínio |
+| ✅ **Reativar neste site** | Volta a atuar aqui |
+| 🔊 **Ligar mensagens na consola** | O mesmo que pôr `debug` a `true` |
+
+### Leitores dentro de web components
+
+Um `<video>` dentro de um shadow root é invisível ao `querySelectorAll` normal, e havia
+leitores modernos a escapar por aí. O script atravessa shadow roots **abertos**, com
+orçamento de nós, e só quando não encontra nenhum `<video>` à vista — nas páginas normais
+custa zero. Roots fechados não são forçados: ficam simplesmente de fora.
 
 ### Qualidade escolhida fora do leitor
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.7.0
+// @version       2.8.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -14,6 +14,7 @@
 // @grant         unsafeWindow
 // @grant         GM_getValue
 // @grant         GM_setValue
+// @grant         GM_registerMenuCommand
 // @grant         GM.getValue
 // @grant         GM.setValue
 // ==/UserScript==
@@ -46,6 +47,7 @@
 		mpdRewrite: true, // players DASH fechados (ex.: Facebook)
 		m3u8Rewrite: true, // master playlists HLS: deixa só a melhor variante
 		qualityList: true, // sites que escolhem a qualidade antes de o leitor existir
+		autoDisable: true, // desliga-se sozinho num site onde tenha prendido o vídeo
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -92,6 +94,55 @@
 	const debugLog = (msg) => { if (settings.debug) { console.log(`MAXQ | ${msg}`); } };
 	const hostMatches = (re) => re.test(location.hostname);
 
+	// Regista que o script mexeu MESMO em alguma coisa nesta página. É o que
+	// autoriza a rede de segurança a desligar-se sozinha: se não tocámos em
+	// nada, um vídeo encravado é problema do site e não nosso.
+	let houveAcao = false;
+	const acao = (msg) => { houveAcao = true; debugLog(msg); };
+
+	// --- INTERRUPTOR POR SITE --------------------------------------------
+	// Um domínio nesta lista faz o script não instalar absolutamente nada:
+	// nenhum hook, nenhuma interceção, nenhum risco. É a saída de emergência,
+	// e é para onde a rede de segurança empurra um site que tenhamos estragado.
+
+	const SITES_OFF = "sitesDesativados";
+
+	function sitesDesativados() {
+		try {
+			if (typeof GM_getValue !== "function") { return []; }
+			const v = GM_getValue(SITES_OFF, []);
+			return Array.isArray(v) ? v : [];
+		} catch (e) { return []; }
+	}
+
+	function estaDesativado() {
+		try { return sitesDesativados().indexOf(location.hostname) !== -1; } catch (e) { return false; }
+	}
+
+	function guardarSites(lista) {
+		try {
+			if (typeof GM_setValue !== "function") { return false; }
+			GM_setValue(SITES_OFF, lista);
+			return true;
+		} catch (e) { return false; }
+	}
+
+	function desativarSite(porque) {
+		const host = location.hostname;
+		const lista = sitesDesativados();
+		if (lista.indexOf(host) === -1) { lista.push(host); }
+		if (!guardarSites(lista)) { return false; }
+		// este aviso sai sempre, mesmo sem debug: o utilizador tem de poder
+		// perceber porque é que o script deixou de atuar aqui
+		console.log("MAXQ | desativado em " + host + " — " + porque);
+		return true;
+	}
+
+	function reativarSite() {
+		const host = location.hostname;
+		return guardarSites(sitesDesativados().filter((h) => h !== host));
+	}
+
 	// --- OBSERVADOR DE DOM PARTILHADO ------------------------------------
 	// Um único MutationObserver por frame, em vez de um por adaptador.
 
@@ -117,6 +168,51 @@
 		if (document.readyState === "loading") {
 			document.addEventListener("DOMContentLoaded", fn, { once: true });
 		} else { fn(); }
+	}
+
+	// --- VÍDEOS, INCLUINDO OS QUE ESTÃO DENTRO DE SHADOW DOM --------------
+	// querySelectorAll não atravessa shadow roots, por isso um <video> dentro
+	// de um web component ficava invisível a tudo o que o script faz. Só se
+	// entra em roots ABERTOS: os fechados devolvem null e não se força nada.
+	//
+	// A procura só acontece quando não há um único <video> à vista — que é
+	// exatamente o caso em que se suspeita de um leitor feito em componente.
+	// Nas páginas normais o custo é zero.
+
+	let srCache = [], srQuando = 0;
+
+	function shadowRootsAbertos() {
+		const agora = Date.now();
+		if (agora - srQuando < 2000) { return srCache; }
+		srQuando = agora;
+		const achados = [];
+		let orcamento = 4000;
+		const anda = (raiz) => {
+			let it;
+			try { it = document.createTreeWalker(raiz, NodeFilter.SHOW_ELEMENT); } catch (e) { return; }
+			while (orcamento-- > 0) {
+				let no;
+				try { no = it.nextNode(); } catch (e) { return; }
+				if (!no) { return; }
+				let sr;
+				try { sr = no.shadowRoot; } catch (e) { continue; }
+				if (sr) { achados.push(sr); anda(sr); } // um root pode ter outro dentro
+			}
+		};
+		try { if (document.documentElement) { anda(document.documentElement); } } catch (e) {}
+		srCache = achados;
+		return srCache;
+	}
+
+	function todosOsVideos() {
+		let diretos = [];
+		try { diretos = Array.prototype.slice.call(document.querySelectorAll("video")); } catch (e) {}
+		if (diretos.length) { return diretos; } // caminho normal
+		const out = [];
+		for (const sr of shadowRootsAbertos()) {
+			try { Array.prototype.push.apply(out, sr.querySelectorAll("video")); } catch (e) {}
+		}
+		return out;
 	}
 
 	// --- VIGIA DE GLOBAIS (sem criar propriedades fantasma) --------------
@@ -240,7 +336,7 @@
 			if (typeof p.setPlaybackQualityRange === "function") { p.setPlaybackQualityRange(target, target); }
 			p.setPlaybackQuality(target);
 			if (ytIsWatchPage()) { ytWriteStoredQuality(target); }
-			debugLog("YouTube -> " + target + " (tentativa " + attempts + ")");
+			acao("YouTube -> " + target + " (tentativa " + attempts + ")");
 			return false;
 		};
 
@@ -315,7 +411,7 @@
 			player.setAutoQualityMode && player.setAutoQualityMode(false);
 			player.abrManager && player.abrManager.disable && player.abrManager.disable();
 			player.setQuality(best);
-			debugLog("Twitch -> " + (best.name || best.height) + " (tentativa " + attempts + ")");
+			acao("Twitch -> " + (best.name || best.height) + " (tentativa " + attempts + ")");
 			return false;
 		};
 
@@ -390,7 +486,7 @@
 				if (d.method === "getQualities" && Array.isArray(d.value)) {
 					const best = d.value.map((q) => q.id).filter((id) => id !== "auto")
 						.sort((a, b) => rank(b) - rank(a))[0];
-					if (best) { post({ method: "setQuality", value: best }); debugLog("Vimeo -> " + best); }
+					if (best) { post({ method: "setQuality", value: best }); acao("Vimeo -> " + best); }
 				}
 			});
 		};
@@ -447,7 +543,7 @@
 						if (score > bestScore) { bestScore = score; best = i; }
 					});
 					// Chamar sempre: é isto que desliga o ABR, mesmo que o índice já coincida
-					if (best >= 0) { p.setCurrentQuality(best); debugLog("JW Player -> nível " + best); }
+					if (best >= 0) { p.setCurrentQuality(best); acao("JW Player -> nível " + best); }
 				} catch (e) {}
 			};
 			try { p.on("levels", apply); } catch (e) {}
@@ -484,7 +580,7 @@
 							if (s > bestScore) { bestScore = s; best = i; }
 						}
 						for (let i = 0; i < ql.length; i++) { ql[i].enabled = (i === best); }
-						debugLog("Video.js -> nível " + best);
+						acao("Video.js -> nível " + best);
 					} catch (e) {}
 				};
 				// Só depois de a lista estabilizar, para não alternar enabled a cada nível novo
@@ -509,7 +605,7 @@
 						const best = reps.reduce((a, b) =>
 							(((b.height || 0) * 1e6 + (b.bandwidth || 0)) > ((a.height || 0) * 1e6 + (a.bandwidth || 0))) ? b : a);
 						reps.forEach((r) => r.enabled(r.id === best.id));
-						debugLog("Video.js (VHS) -> " + (best.height || best.bandwidth));
+						acao("Video.js (VHS) -> " + (best.height || best.bandwidth));
 					} catch (e) {}
 				};
 				player.on("loadedmetadata", applyVhs);
@@ -574,7 +670,7 @@
 						hls.autoLevelCapping = -1;
 						hls.startLevel = best; // evita arrancar em qualidade baixa
 						hls.loadLevel = best;  // sem flush do buffer
-						debugLog("hls.js -> nível " + best);
+						acao("hls.js -> nível " + best);
 					} catch (e) {}
 				});
 			} catch (e) {}
@@ -636,7 +732,7 @@
 			hlsTries.set(hls, n + 1);
 			hls.nextLevel = best; // troca de nível sem esvaziar o buffer
 			hls.loadLevel = best;
-			debugLog("hls.js (bundle) -> nível " + best + " ("
+			acao("hls.js (bundle) -> nível " + best + " ("
 				+ ((levels[best] && levels[best].height) || "?") + "p, tentativa " + (n + 1) + ")");
 			return false;
 		} catch (e) { return true; }
@@ -680,7 +776,7 @@
 	function hlsGenericApply() {
 		if (!settings.hlsGeneric) { return; }
 		try {
-			document.querySelectorAll("video").forEach((v) => {
+			todosOsVideos().forEach((v) => {
 				if (hlsVideoDone.has(v)) { return; }
 				const hls = findHlsNear(v);
 				if (!hls) { return; }
@@ -720,13 +816,13 @@
 					const best = reps.reduce((a, b) =>
 						(((b.bitrateInKbit || b.bandwidth || 0) > (a.bitrateInKbit || a.bandwidth || 0)) ? b : a));
 					player.setRepresentationForTypeById("video", best.id);
-					debugLog("dash.js v5 -> " + best.id);
+					acao("dash.js v5 -> " + best.id);
 				} else if (typeof player.setQualityFor === "function") {
 					const list = player.getBitrateInfoListFor("video");
 					if (!list || list.length < 2) { return; }
 					const top = list.reduce((a, b) => (b.bitrate > a.bitrate ? b : a));
 					player.setQualityFor("video", top.qualityIndex, true);
-					debugLog("dash.js v4 -> " + top.qualityIndex);
+					acao("dash.js v4 -> " + top.qualityIndex);
 				}
 			} catch (e) {}
 		};
@@ -788,7 +884,7 @@
 							(((b.height || 0) * 1e6 + (b.bandwidth || 0)) > ((a.height || 0) * 1e6 + (a.bandwidth || 0))) ? b : a);
 						if (best && typeof player.selectVariantTrack === "function") {
 							player.selectVariantTrack(best, true);
-							debugLog("shaka -> " + (best.height || best.bandwidth));
+							acao("shaka -> " + (best.height || best.bandwidth));
 						}
 					} catch (e) {}
 				};
@@ -832,7 +928,7 @@
 			const best = reps.reduce((a, b) =>
 				(((+b.getAttribute("height") || 0) > (+a.getAttribute("height") || 0)) ? b : a));
 			reps.forEach((r) => { if (r !== best && r.parentNode) { r.parentNode.removeChild(r); mudou = true; } });
-			if (mudou) { debugLog("MPD -> " + best.getAttribute("height") + "p (de " + reps.length + ")"); }
+			if (mudou) { acao("MPD -> " + best.getAttribute("height") + "p (de " + reps.length + ")"); }
 		}
 		return mudou;
 	}
@@ -874,7 +970,7 @@
 						return '"' + MPD_KEY + '":' + JSON.stringify(new XMLSerializer().serializeToString(doc));
 					} catch (e) { return m; }
 				});
-				if (novo !== txt) { node.textContent = novo; debugLog("MPD inline reescrito"); }
+				if (novo !== txt) { node.textContent = novo; acao("MPD inline reescrito"); }
 			} catch (e) {}
 		};
 
@@ -1009,7 +1105,7 @@
 
 		if (variants.length < 2) { return null; }
 		const best = variants.reduce((a, b) => (b.score > a.score ? b : a));
-		debugLog("m3u8 -> " + (best.h || "?") + "p (de " + variants.length + " variantes)");
+		acao("m3u8 -> " + (best.h || "?") + "p (de " + variants.length + " variantes)");
 		return keep.concat(best.lines).join("\n");
 	}
 
@@ -1045,7 +1141,7 @@
 
 	function resLogApply() {
 		if (!settings.debug) { return; } // sem debug não se liga sequer aos eventos
-		try { document.querySelectorAll("video").forEach(resLogWatch); } catch (e) {}
+		try { todosOsVideos().forEach(resLogWatch); } catch (e) {}
 	}
 
 	// --- HOOK: manifest do vimeo.com --------------------------------------
@@ -1062,7 +1158,7 @@
 			const score = (r) => (r.height || 0) * 1e6 + (r.bitrate || r.bandwidth || 0);
 			const best = obj.video.reduce((a, b) => (score(b) > score(a) ? b : a));
 			if (!best) { return null; }
-			debugLog("vimeo -> " + (best.height || best.bitrate) + " (de " + obj.video.length + ")");
+			acao("vimeo -> " + (best.height || best.bitrate) + " (de " + obj.video.length + ")");
 			return Object.assign({}, obj, { video: [best] });
 		};
 
@@ -1248,7 +1344,7 @@
 			arr[flagIdx][flagKey] = false;
 			arr[melhor][flagKey] = true;
 		} catch (e) { return false; }
-		debugLog("lista de qualidades -> " + alturas[melhor] + "p (o site queria "
+		acao("lista de qualidades -> " + alturas[melhor] + "p (o site queria "
 			+ alturas[flagIdx] + "p, via " + flagKey + ")");
 		return true;
 	}
@@ -1322,13 +1418,18 @@
 		// É o único caminho quando a lista vem escrita no HTML (o Chrome já não
 		// deixa reescrever um <script> inline antes de ele correr). Funciona
 		// porque o leitor costuma vir num <script> externo, carregado depois.
-		let varridos = 0, parou = false;
+		let varridos = 0, parou = false, ultimoN = -1;
 		const varrerGlobais = () => {
 			if (parou || !settings.qualityList) { return; }
-			if (++varridos > 12) { parar(); return; }
+			if (++varridos > 40) { parar(); return; }
 			let ks;
 			try { ks = Object.keys(W); } catch (e) { return; }
 			if (ks.length > 800) { parar(); return; }
+			// travão barato: sem globais novos desde a última vez, não há nada
+			// que possa ter aparecido — é o que torna os varrimentos frequentes
+			// praticamente gratuitos
+			if (ks.length === ultimoN) { return; }
+			ultimoN = ks.length;
 			const orc = { n: 6000 };
 			for (const k of ks) {
 				if (orc.n <= 0) { break; }
@@ -1348,8 +1449,104 @@
 		// o "load" de cada <script> passa pela captura no document antes de o
 		// site lhe tocar: é a janela para corrigir a lista a tempo
 		try { document.addEventListener("load", varrerGlobais, true); } catch (e) {}
+		// e um <script> inline não dispara "load" nenhum: aí o aviso vem do
+		// observador de DOM, logo a seguir ao script correr e definir o global
+		onDomChange((muts) => {
+			if (parou) { return; }
+			for (const m of muts) {
+				for (const n of m.addedNodes) {
+					if (n.nodeType === 1 && n.tagName === "SCRIPT") { varrerGlobais(); return; }
+				}
+			}
+		});
 		onReady(varrerGlobais);
 		setTimeout(parar, 15000);
+	}
+
+	// --- REDE DE SEGURANÇA -------------------------------------------------
+	// Se o script mexeu nesta página e, apesar disso, um vídeo ficou preso a
+	// tentar arrancar, assume-se que a culpa é nossa: o script desliga-se neste
+	// domínio e a página recarrega uma vez. Antes um site a funcionar sem
+	// melhoria nenhuma do que um site estragado.
+	//
+	// As condições são de propósito apertadas, para nunca disparar à toa:
+	//   - o script tem de ter mesmo alterado alguma coisa nesta página
+	//   - o vídeo tem de estar a TENTAR tocar (paused=false), não em pausa
+	//   - readyState < 3: não tem sequer dados para continuar
+	//   - currentTime congelado o tempo todo
+	// Um vídeo em pausa, com autoplay bloqueado, ou a carregar mas a progredir,
+	// nunca chega a acordar isto.
+
+	const CAO_MS = 12000;
+	const caoEstado = new WeakMap();
+	let caoTimer = null, caoDisparado = false, caoTicks = 0;
+
+	function caoDispara() {
+		caoDisparado = true;
+		caoPara();
+		if (!desativarSite("um vídeo ficou " + (CAO_MS / 1000) + " s preso a tentar arrancar")) { return; }
+		// recarrega no máximo uma vez por separador e por domínio: nunca um ciclo
+		try {
+			const marca = "maxq-recarregado";
+			if (sessionStorage.getItem(marca) === location.hostname) { return; }
+			sessionStorage.setItem(marca, location.hostname);
+			location.reload();
+		} catch (e) {} // sem sessionStorage não se arrisca recarregar
+	}
+
+	function caoPara() {
+		if (caoTimer) { clearInterval(caoTimer); caoTimer = null; }
+	}
+
+	function caoTick() {
+		if (caoDisparado || !settings.autoDisable) { caoPara(); return; }
+		if (++caoTicks > 600) { caoPara(); return; } // ~10 min e desiste
+		let videos;
+		try { videos = todosOsVideos(); } catch (e) { return; }
+		if (!videos.length) { return; }
+		if (!houveAcao) { return; } // não mexemos em nada: não é problema nosso
+		for (const v of videos) {
+			let st = caoEstado.get(v);
+			if (!st) { st = { desde: 0, tempo: -1 }; caoEstado.set(v, st); }
+			let tempo, tentando;
+			try {
+				tempo = v.currentTime;
+				tentando = !v.paused && !v.ended && v.readyState < 3;
+			} catch (e) { continue; }
+			if (!tentando || tempo !== st.tempo) { st.desde = 0; st.tempo = tempo; continue; }
+			if (!st.desde) { st.desde = Date.now(); continue; }
+			if (Date.now() - st.desde >= CAO_MS) { caoDispara(); return; }
+		}
+	}
+
+	function caoArranca() {
+		if (!settings.autoDisable || caoTimer || caoDisparado) { return; }
+		caoTimer = setInterval(caoTick, 1000);
+	}
+
+	// --- MENU DO GESTOR ----------------------------------------------------
+	// Saída de emergência a um clique, no ícone do Tampermonkey, sem ter de
+	// procurar nada no separador Armazenamento.
+
+	function registarMenu() {
+		if (typeof GM_registerMenuCommand !== "function") { return; }
+		const recarrega = () => { try { location.reload(); } catch (e) {} };
+		try {
+			if (estaDesativado()) {
+				GM_registerMenuCommand("✅ Reativar neste site", () => {
+					if (reativarSite()) { recarrega(); }
+				});
+			} else {
+				GM_registerMenuCommand("⛔ Desativar neste site", () => {
+					if (desativarSite("desativado pelo utilizador")) { recarrega(); }
+				});
+			}
+			GM_registerMenuCommand(
+				(settings.debug ? "🔇 Desligar" : "🔊 Ligar") + " mensagens na consola",
+				() => {
+					try { GM_setValue("debug", !settings.debug); recarrega(); } catch (e) {}
+				});
+		} catch (e) {}
 	}
 
 	// --- ARRANQUE ----------------------------------------------------------
@@ -1366,6 +1563,7 @@
 			try { vjsApply(); } catch (e) {}
 			try { hlsGenericApply(); } catch (e) {}
 			try { resLogApply(); } catch (e) {}
+			try { caoArranca(); } catch (e) {} // rede de segurança, só onde há vídeo
 		};
 		let timer = null, ticks = 0, lastStart = 0;
 
@@ -1387,7 +1585,7 @@
 		}, true);
 
 		onReady(() => {
-			if (document.querySelector("video, .jwplayer, .video-js")) { startScan(); }
+			if (todosOsVideos().length || document.querySelector(".jwplayer, .video-js")) { startScan(); }
 		});
 
 		onDomChange((muts) => {
@@ -1406,7 +1604,17 @@
 	// 1) Definições primeiro (síncrono), para os hooks respeitarem os interruptores
 	const sync = loadSettingsSync();
 
-	// 2) Hooks de document-start
+	// 2) Menu do gestor: tem de existir mesmo em sites desativados, senão o
+	//    utilizador fica sem forma de voltar a ligar o script aqui
+	registarMenu();
+
+	// 3) Saída de emergência: neste domínio não se instala absolutamente nada
+	if (estaDesativado()) {
+		debugLog("desativado neste site — nada foi instalado");
+		return;
+	}
+
+	// 4) Hooks de document-start
 	ytStorageBoot();
 	twitchStorageBoot();
 	hlsHook();
@@ -1417,7 +1625,7 @@
 	qualityListHook();
 	vimeoManifestHook();
 
-	// 3) Adaptadores de runtime
+	// 5) Adaptadores de runtime
 	if (sync) {
 		startAdapters();
 	} else {

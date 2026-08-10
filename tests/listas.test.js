@@ -11,7 +11,11 @@ const { bloco, montar, grupo, ok } = require("./harness");
 const ditos = [];
 const api = montar(
 	bloco("\tconst QL_FLAG", "\tfunction qlScan("),
-	{ settings: { qualityList: true, debug: true }, debugLog: (m) => ditos.push(m) },
+	{
+		settings: { qualityList: true, debug: true },
+		debugLog: (m) => ditos.push(m),
+		acao: (m) => ditos.push(m) // no script, marca que houve mesmo uma alteração
+	},
 	"{ qlUpgrade, qlScan }"
 );
 
