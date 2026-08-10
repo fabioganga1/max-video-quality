@@ -34,6 +34,7 @@ instala-a sozinho.
 | **hls.js** | Nível fixado no `MANIFEST_PARSED` | ✅ Testado |
 | **hls.js empacotado** (sem `window.Hls`) | Instância encontrada a partir do `<video>` | ✅ Testado |
 | **Qualquer leitor HLS** | Master playlist `.m3u8` reduzida à melhor variante | ✅ Testado |
+| **Sites que escolhem a qualidade antes do leitor** | Predefinida movida para a variante mais alta da lista | ✅ Testado |
 | **dash.js** (v4 e v5) | ABR desligado + melhor representação | ✅ Testado |
 | **Shaka Player** | ABR desligado + melhor variante | ✅ Testado |
 | **Facebook** | Reescrita do manifest DASH | ⚠️ Parcial |
@@ -96,6 +97,7 @@ primeira utilização do script):
 | `youtubeTargetRes` | `highest` | Resolução alvo no YouTube (`highest`, `hd2160`, `hd1080`, …) |
 | `twitchSpoofVisibility` | `false` | Impede o Twitch de baixar a qualidade em separadores em segundo plano |
 | `m3u8Rewrite` | `true` | Corta a master playlist HLS na melhor variante |
+| `qualityList` | `true` | Sites que escolhem a qualidade antes de o leitor existir |
 | `debug` | `false` | Mostra na consola (F12) cada ação do script e a resolução real de cada vídeo, com o prefixo `MAXQ` |
 
 Cada plataforma tem também o seu interruptor próprio (`youtube`, `twitch`, `vimeoSite`,
@@ -141,3 +143,19 @@ apareça e só então lhe toca.
 
 **Regra de base:** não conseguir subir a qualidade é aceitável; estragar a reprodução
 nunca é. Perante qualquer dúvida, o script não age.
+
+### Qualidade escolhida fora do leitor
+
+Alguns sites decidem a qualidade **antes** de o leitor existir: entregam ao `hls.js` um
+manifesto já de qualidade única e a escolha real está numa lista de variantes nos dados
+do próprio site. Não havendo leitor onde agir, o script move a marca de *predefinida*
+para a variante mais alta dessa lista.
+
+A lista só é reconhecida quando tem exatamente esta forma: dois ou mais objetos, dois ou
+mais com altura entre 240 e 4320, dois ou mais com uma URL que aponte mesmo para media
+(`.m3u8`, `.mpd`, `.mp4`, `.webm`) e **exatamente um** marcado como predefinido. Falha
+qualquer condição e não se toca em nada — é o que impede o script de mexer em listas de
+imagens, idiomas, legendas ou capítulos, que se parecem mas não são.
+
+Ao contrário do corte do `.m3u8`, **nada é apagado nem reordenado**: só muda a marca. O
+menu de qualidades do site fica intacto e o utilizador pode voltar atrás quando quiser.

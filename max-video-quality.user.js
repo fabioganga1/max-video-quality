@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.6.0
+// @version       2.7.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -45,6 +45,7 @@
 		shaka: true,
 		mpdRewrite: true, // players DASH fechados (ex.: Facebook)
 		m3u8Rewrite: true, // master playlists HLS: deixa só a melhor variante
+		qualityList: true, // sites que escolhem a qualidade antes de o leitor existir
 		debug: false,
 		overwriteStoredSettings: false
 	};
@@ -1160,6 +1161,197 @@
 		} catch (e) {}
 	}
 
+	// --- LISTAS DE QUALIDADE ESCOLHIDAS FORA DO LEITOR ---------------------
+	// Há sites que decidem a qualidade ANTES de o leitor existir: entregam ao
+	// hls.js/dash um manifesto já de qualidade única e a escolha real está numa
+	// lista de variantes nos dados do próprio site. Não havendo leitor onde
+	// agir, resta mudar qual dessas variantes está marcada como predefinida.
+	//
+	// NADA é apagado nem reordenado: só se move a flag de "predefinida" para a
+	// variante de maior altura, e apenas quando a lista tem exatamente a forma
+	// esperada. O menu do site fica intacto e o utilizador pode voltar atrás.
+	// À mínima dúvida sobre a forma da lista, não se toca em nada.
+
+	const QL_FLAG = /^(is)?(default|selected|current)(quality|track|source|media|level)?$/i;
+	const QL_ALTURA = /^(height|quality|res|resolution)$/i;
+	const QL_MEDIA = /\.(m3u8|mpd|mp4|webm)(\?|#|$)/i;
+	const qlVistos = new WeakSet(); // listas já avaliadas: nunca reavaliar
+
+	// Altura utilizável: 240..4320. Um "auto", um 0 ou um [] não contam.
+	function qlAltura(o, ks) {
+		for (const k of ks) {
+			if (!QL_ALTURA.test(k)) { continue; }
+			const v = o[k];
+			const n = (typeof v === "number") ? v
+				: ((typeof v === "string") ? parseInt(v, 10) : NaN);
+			if (n >= 240 && n <= 4320) { return n; }
+		}
+		return 0;
+	}
+
+	// Exige uma URL que aponte MESMO para media: é o que separa uma lista de
+	// qualidades de vídeo de uma galeria de imagens com height e default.
+	function qlTemMedia(o, ks) {
+		for (const k of ks) {
+			const v = o[k];
+			if (typeof v === "string" && v.length < 4096 && QL_MEDIA.test(v)) { return true; }
+		}
+		return false;
+	}
+
+	function qlFlag(o, ks) {
+		for (const k of ks) {
+			if (o[k] === true && QL_FLAG.test(k)) { return k; }
+		}
+		return null;
+	}
+
+	// Devolve true se mexeu
+	function qlUpgrade(arr) {
+		if (!Array.isArray(arr) || arr.length < 2 || arr.length > 200) { return false; }
+		if (qlVistos.has(arr)) { return false; }
+
+		const alturas = [], temMedia = [];
+		let comAltura = 0, comMedia = 0, nFlags = 0, flagKey = null, flagIdx = -1;
+
+		for (let i = 0; i < arr.length; i++) {
+			const o = arr[i];
+			if (!o || typeof o !== "object" || Array.isArray(o)) { return false; }
+			let ks;
+			try { ks = Object.keys(o); } catch (e) { return false; }
+			if (ks.length > 60) { return false; }
+			alturas[i] = qlAltura(o, ks);
+			if (alturas[i]) { comAltura++; }
+			temMedia[i] = qlTemMedia(o, ks);
+			if (temMedia[i]) { comMedia++; }
+			const f = qlFlag(o, ks);
+			if (f) { nFlags++; flagKey = f; flagIdx = i; }
+		}
+
+		// as três condições, todas obrigatórias
+		if (comAltura < 2 || comMedia < 2 || nFlags !== 1) { return false; }
+
+		// a melhor só pode sair de entre as que têm mesmo URL de media
+		let melhor = -1;
+		for (let i = 0; i < arr.length; i++) {
+			if (!temMedia[i] || !alturas[i]) { continue; }
+			if (melhor < 0 || alturas[i] > alturas[melhor]) { melhor = i; }
+		}
+		if (melhor < 0) { return false; }
+
+		qlVistos.add(arr);
+		if (melhor === flagIdx) { return false; } // já estava na melhor
+		// nunca inventar propriedades: a chave tem de já existir no destino
+		if (!Object.prototype.hasOwnProperty.call(arr[melhor], flagKey)) { return false; }
+
+		try {
+			arr[flagIdx][flagKey] = false;
+			arr[melhor][flagKey] = true;
+		} catch (e) { return false; }
+		debugLog("lista de qualidades -> " + alturas[melhor] + "p (o site queria "
+			+ alturas[flagIdx] + "p, via " + flagKey + ")");
+		return true;
+	}
+
+	// Travessia com orçamento de nós: nunca se transforma num varrimento caro
+	function qlScan(raiz, orc) {
+		let mexeu = false;
+		const vistos = new Set();
+		const anda = (o, prof) => {
+			if (orc.n <= 0 || prof > 6 || !o || typeof o !== "object") { return; }
+			if (vistos.has(o)) { return; }
+			vistos.add(o);
+			orc.n--;
+			if (Array.isArray(o)) {
+				if (qlUpgrade(o)) { mexeu = true; return; }
+				for (let i = 0; i < o.length && i < 200; i++) { anda(o[i], prof + 1); }
+				return;
+			}
+			let ks;
+			try { ks = Object.keys(o); } catch (e) { return; }
+			if (ks.length > 200) { return; }
+			for (const k of ks) {
+				let v;
+				try { v = o[k]; } catch (e) { continue; } // getters do site podem rebentar
+				if (v && typeof v === "object") { anda(v, prof + 1); }
+			}
+		};
+		try { anda(raiz, 0); } catch (e) {}
+		return mexeu;
+	}
+
+	function qualityListHook() {
+		if (!settings.qualityList) { return; }
+
+		// Via 1: JSON.parse — apanha a esmagadora maioria dos sites.
+		// Filtro barato à cabeça: sem um sufixo de media no texto cru, nem se olha.
+		try {
+			const realParse = JSON.parse;
+			JSON.parse = function (texto) {
+				const out = realParse.apply(this, arguments);
+				try {
+					if (settings.qualityList && out && typeof out === "object"
+						&& typeof texto === "string" && texto.length < 8e6
+						&& /\.(m3u8|mpd|mp4|webm)/i.test(texto)) {
+						qlScan(out, { n: 3000 });
+					}
+				} catch (e) {}
+				return out;
+			};
+		} catch (e) {}
+
+		// Via 2: res.json() — o fetch não passa pelo JSON.parse da página
+		try {
+			const RP = W.Response && W.Response.prototype;
+			const realJson = RP && RP.json;
+			if (typeof realJson === "function") {
+				RP.json = function () {
+					return realJson.apply(this, arguments).then((out) => {
+						try {
+							if (settings.qualityList && out && typeof out === "object") {
+								qlScan(out, { n: 3000 });
+							}
+						} catch (e) {}
+						return out;
+					});
+				};
+			}
+		} catch (e) {}
+
+		// Via 3: globais da página definidos por <script> inline.
+		// É o único caminho quando a lista vem escrita no HTML (o Chrome já não
+		// deixa reescrever um <script> inline antes de ele correr). Funciona
+		// porque o leitor costuma vir num <script> externo, carregado depois.
+		let varridos = 0, parou = false;
+		const varrerGlobais = () => {
+			if (parou || !settings.qualityList) { return; }
+			if (++varridos > 12) { parar(); return; }
+			let ks;
+			try { ks = Object.keys(W); } catch (e) { return; }
+			if (ks.length > 800) { parar(); return; }
+			const orc = { n: 6000 };
+			for (const k of ks) {
+				if (orc.n <= 0) { break; }
+				let v;
+				try { v = W[k]; } catch (e) { continue; }
+				if (!v || typeof v !== "object") { continue; }
+				// nunca entrar em nós do DOM nem noutras janelas
+				if (v === W || v === W.document || typeof v.nodeType === "number") { continue; }
+				if (v.window === v || typeof v.postMessage === "function") { continue; }
+				try { if (qlScan(v, orc)) { parar(); return; } } catch (e) {}
+			}
+		};
+		const parar = () => {
+			parou = true;
+			try { document.removeEventListener("load", varrerGlobais, true); } catch (e) {}
+		};
+		// o "load" de cada <script> passa pela captura no document antes de o
+		// site lhe tocar: é a janela para corrigir a lista a tempo
+		try { document.addEventListener("load", varrerGlobais, true); } catch (e) {}
+		onReady(varrerGlobais);
+		setTimeout(parar, 15000);
+	}
+
 	// --- ARRANQUE ----------------------------------------------------------
 
 	function startAdapters() {
@@ -1222,6 +1414,7 @@
 	shakaHook();
 	mpdRewriteHook();
 	m3u8RewriteHook();
+	qualityListHook();
 	vimeoManifestHook();
 
 	// 3) Adaptadores de runtime
