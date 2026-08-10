@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<title>max-video-quality — validação em browser</title>
+
+<!-- 1) O userscript, como se fosse @run-at document-start -->
+<script src="/mvq.js"></script>
+
+<!-- 2) Primeira observação: nesta altura o hls.js ainda não existe.
+        Um site que decida por `"Hls" in window` tem de ver FALSO. -->
+<script>
+window.__r = [];
+window.__r.push(["antes de tudo: \"Hls\" in window", ("Hls" in window) === false, String("Hls" in window)]);
+window.__r.push(["antes de tudo: \"dashjs\" in window", ("dashjs" in window) === false, String("dashjs" in window)]);
+window.__r.push(["antes de tudo: \"shaka\" in window", ("shaka" in window) === false, String("shaka" in window)]);
+</script>
+
+<!-- 3) A lista de qualidades, num <script> inline, como fazem os portais de
+        vídeo. O leitor só a lê mais tarde, quando o bundle externo chegar. -->
+<script>
+var flashvars_991122 = {
+	video_title: "exemplo",
+	mediaPriority: "hls",
+	mediaDefinitions: [
+		{ group: 1, height: 1080, width: 1920, defaultQuality: false, format: "hls",
+		  quality: "1080", videoUrl: "/media/1080/master.m3u8?" },
+		{ group: 1, height: 240, width: 426, defaultQuality: false, format: "hls",
+		  quality: "240", videoUrl: "/media/240/master.m3u8?" },
+		{ group: 1, height: 480, width: 854, defaultQuality: false, format: "hls",
+		  quality: "480", videoUrl: "/media/480/master.m3u8?" },
+		{ group: 1, height: 720, width: 1280, defaultQuality: true, format: "hls",
+		  quality: "720", videoUrl: "/media/720/master.m3u8?" },
+		{ group: 1, height: 1080, width: 1920, defaultQuality: false, format: "mp4",
+		  quality: [], remote: true, videoUrl: "/video/get_media?s=abc" }
+	]
+};
+</script>
+</head>
+<body style="font:14px/1.6 system-ui;max-width:820px;margin:2rem auto;padding:0 1rem">
+<h1>max-video-quality — validação em browser</h1>
+<p>Reproduz o padrão genérico: lista de qualidades num <code>&lt;script&gt;</code> inline,
+leitor num bundle externo carregado depois.</p>
+<video id="v" controls style="width:100%;background:#111;aspect-ratio:16/9"></video>
+<div id="out">a correr…</div>
+
+<!-- 4) O bundle do leitor, externo, como na vida real -->
+<script src="/hls.min.js"></script>
+<script src="/player.js"></script>
+</body>
+</html>
