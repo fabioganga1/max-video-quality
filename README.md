@@ -131,3 +131,13 @@ já não baixa automaticamente a resolução para compensar.
 O script corre em `document-start` e não faz nada em páginas sem vídeo — as
 interceções são passivas e a deteção só arranca quando é encontrado um elemento de
 vídeo ou um leitor conhecido.
+
+**Nunca são criadas variáveis globais novas na página.** Definir `window.Hls` (ou
+`dashjs`, ou `shaka`) antes de a biblioteca existir faria `"Hls" in window` passar a
+verdadeiro — e há sites que decidem exatamente por aí se ainda precisam de descarregar
+o leitor. Convencidos de que já lá estava, abortavam o download e o vídeo ficava a
+carregar para sempre, sem erro nenhum. O script limita-se a esperar que a biblioteca
+apareça e só então lhe toca.
+
+**Regra de base:** não conseguir subir a qualidade é aceitável; estragar a reprodução
+nunca é. Perante qualquer dúvida, o script não age.

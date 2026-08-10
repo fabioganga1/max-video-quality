@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          Max Video Quality
 // @namespace     https://github.com/fabioganga1
-// @version       2.5.1
+// @version       2.6.0
 // @icon          data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%B6%EF%B8%8F%3C/text%3E%3C/svg%3E
 // @description   Força automaticamente a melhor qualidade disponível em vídeos na web
 // @author        fabioganga1
@@ -116,6 +116,59 @@
 		if (document.readyState === "loading") {
 			document.addEventListener("DOMContentLoaded", fn, { once: true });
 		} else { fn(); }
+	}
+
+	// --- VIGIA DE GLOBAIS (sem criar propriedades fantasma) --------------
+	// Definir um getter/setter para um global que ainda NÃO existe faz
+	// `"Nome" in window` passar a true. Muitos sites decidem por aí se ainda
+	// precisam de carregar a biblioteca; convencidos de que já lá está,
+	// abortam o download e o leitor fica a rodar para sempre, sem erro
+	// nenhum. (Pornhub: `check: () => "Hls" in window` -> nunca descarregava
+	// o hls.js.) Por isso nada é definido à cabeça: só se embrulha o que
+	// realmente aparecer.
+
+	const globalSubs = [];
+	let globalTimer = null, globalTicks = 0;
+
+	function globalStop() {
+		try { document.removeEventListener("load", globalSweep, true); } catch (e) {}
+		if (globalTimer) { clearInterval(globalTimer); globalTimer = null; }
+	}
+
+	// Devolve true quando já não falta nenhum global
+	function globalSweep() {
+		for (let i = globalSubs.length - 1; i >= 0; i--) {
+			const sub = globalSubs[i];
+			let atual;
+			try {
+				if (!Object.prototype.hasOwnProperty.call(W, sub.nome)) { continue; }
+				atual = W[sub.nome];
+			} catch (e) { continue; }
+			if (atual === null || atual === undefined) { continue; }
+			globalSubs.splice(i, 1);
+			try {
+				const novo = sub.embrulhar(atual);
+				// os hooks que alteram no sítio devolvem o mesmo objeto: nada a escrever
+				if (novo && novo !== atual) { W[sub.nome] = novo; }
+			} catch (e) {}
+		}
+		if (!globalSubs.length) { globalStop(); return true; }
+		return false;
+	}
+
+	function onGlobal(nome, embrulhar) {
+		globalSubs.push({ nome: nome, embrulhar: embrulhar });
+		if (globalSweep()) { return; }
+		if (globalTimer) { return; }
+		// O "load" de um <script> passa pela fase de captura no document ANTES
+		// do onload do próprio site: é aí que se apanha a biblioteca acabada de
+		// ser definida, ainda antes de o site lhe tocar.
+		try { document.addEventListener("load", globalSweep, true); } catch (e) {}
+		globalTicks = 0;
+		globalTimer = setInterval(() => {
+			if (globalSweep()) { return; }
+			if (++globalTicks > 150) { globalStop(); } // ~15 s e desiste
+		}, 100);
 	}
 
 	// --- ADAPTADOR: YouTube ----------------------------------------------
@@ -546,15 +599,7 @@
 			});
 		};
 
-		try {
-			let Real, Wrapped;
-			if (W.Hls) { Real = W.Hls; Wrapped = wrap(Real); }
-			Object.defineProperty(W, "Hls", {
-				configurable: true,
-				get() { return Wrapped; },
-				set(v) { Real = v; Wrapped = wrap(v); }
-			});
-		} catch (e) {}
+		onGlobal("Hls", wrap);
 	}
 
 	// --- ADAPTADOR: hls.js empacotado (sem window.Hls) ---------------------
@@ -719,15 +764,8 @@
 			return v;
 		};
 
-		try {
-			let real;
-			if (W.dashjs) { real = install(W.dashjs); }
-			Object.defineProperty(W, "dashjs", {
-				configurable: true,
-				get() { return real; },
-				set(v) { real = install(v); }
-			});
-		} catch (e) {}
+		// install() altera o objeto no sítio e devolve-o: nada é reescrito
+		onGlobal("dashjs", install);
 	}
 
 	// --- HOOK: Shaka Player ------------------------------------------------
@@ -776,15 +814,7 @@
 			return v;
 		};
 
-		try {
-			let real;
-			if (W.shaka) { real = install(W.shaka); }
-			Object.defineProperty(W, "shaka", {
-				configurable: true,
-				get() { return real; },
-				set(v) { real = install(v); }
-			});
-		} catch (e) {}
+		onGlobal("shaka", install);
 	}
 
 	// --- HOOK: manifests DASH (Facebook e outros players fechados) ---------
